@@ -1,0 +1,15 @@
+.git
+.venv
+__pycache__
+*.pyc
+.mypy_cache
+.ruff_cache
+.pytest_cache
+.hypothesis
+user_data/data
+user_data/logs
+user_data/backtest_results
+user_data/hyperopt_results
+.env
+uv.lock
+tests

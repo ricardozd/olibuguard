@@ -216,3 +216,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Freqtrade: datos descargados, resultados y logs (el código sí se versiona)
+user_data/data/
+user_data/logs/
+user_data/backtest_results/
+user_data/hyperopt_results/
+user_data/notebooks/
+user_data/plot/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
