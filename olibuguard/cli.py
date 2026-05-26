@@ -1,11 +1,11 @@
 """Control plane (CLI).
 
-Comandos:
-  smoke  Arranca, lee config, auto-chequea el risk gate y termina limpio.
-  run    Arranca el bot en un modo concreto (backtest | paper | live).
+Commands:
+  smoke  Start, read config, self-check the risk gate and exit cleanly.
+  run    Start the bot in a specific mode (backtest | paper | live).
 
-Guardarraíl (5.1): el modo se fija al arrancar; ``live`` exige confirmación
-explícita con ``--i-understand-this-is-real-money`` y banner en rojo.
+Guardrail (5.1): the mode is fixed at startup; ``live`` requires explicit
+confirmation via ``--i-understand-this-is-real-money`` and a red banner.
 """
 
 from __future__ import annotations
@@ -51,10 +51,10 @@ def _banner(mode: Mode) -> None:
     styles: dict[Mode, tuple[str, str]] = {
         Mode.BACKTEST: ("BACKTEST", "bold cyan"),
         Mode.PAPER: ("PAPER (dry-run)", "bold green"),
-        Mode.LIVE: ("LIVE — DINERO REAL", "bold white on red"),
+        Mode.LIVE: ("LIVE — REAL MONEY", "bold white on red"),
     }
     label, style = styles[mode]
-    _console.print(Panel(f"MODO: {label}", style=style, expand=False))
+    _console.print(Panel(f"MODE: {label}", style=style, expand=False))
 
 
 def _cmd_smoke(args: argparse.Namespace) -> int:
@@ -64,11 +64,11 @@ def _cmd_smoke(args: argparse.Namespace) -> int:
     log.info("config.loaded", whitelist=config.risk.whitelist)
 
     gate = RiskGate(config.risk)
-    NullAdvisor()  # default advisor: nunca opina
+    NullAdvisor()  # default advisor: never gives an opinion
     state = PortfolioState()
     allowed = config.risk.whitelist[0] if config.risk.whitelist else "BTC/USDT"
 
-    # El risk gate DEBE rechazar órdenes inválidas (auto-chequeo).
+    # The risk gate MUST reject invalid orders (self-check).
     out_of_whitelist = OrderIntent(
         symbol="FOO/BAR",
         side=Side.BUY,
@@ -84,7 +84,7 @@ def _cmd_smoke(args: argparse.Namespace) -> int:
     for check, intent in (("whitelist", out_of_whitelist), ("min_order", too_small)):
         if gate.evaluate(intent, state).approved:
             log.error("smoke.fail", check=check)
-            _console.print(f"[bold red]smoke FAIL[/]: risk gate aprobó orden inválida ({check})")
+            _console.print(f"[bold red]smoke FAIL[/]: risk gate approved invalid order ({check})")
             return 1
 
     log.info("smoke.ok")
@@ -96,13 +96,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
     mode = _resolve_mode(args.mode)
     if mode is None:
         _console.print(
-            "[bold red]error:[/] indica --mode {backtest,paper,live} (o OLIBUGUARD_MODE)"
+            "[bold red]error:[/] specify --mode {backtest,paper,live} (or OLIBUGUARD_MODE)"
         )
         return 2
     if mode.touches_real_money and not args.i_understand_this_is_real_money:
         _console.print(
-            f"[bold red]error:[/] el modo LIVE opera con DINERO REAL. "
-            f"Re-ejecuta con {_LIVE_FLAG} si de verdad es lo que quieres."
+            f"[bold red]error:[/] LIVE mode trades with REAL MONEY. "
+            f"Re-run with {_LIVE_FLAG} if that is really what you want."
         )
         return 2
 
@@ -119,34 +119,34 @@ def _cmd_run(args: argparse.Namespace) -> int:
     log.warning(
         "loop.not_implemented",
         phase="0",
-        detail="market data y order manager llegan en Fase 1-2; nada que operar todavía",
+        detail="market data and order manager arrive in Phase 1-2; nothing to trade yet",
     )
-    _console.print("[yellow]Fase 0: sin loop de trading todavía. Saliendo limpio.[/]")
+    _console.print("[yellow]Phase 0: no trading loop yet. Exiting cleanly.[/]")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    load_dotenv()  # carga .env si existe (secretos fuera del código; ver .env.example)
+    load_dotenv()  # load .env if present (secrets out of the code; see .env.example)
     parser = argparse.ArgumentParser(
         prog="olibuguard",
-        description="Bot de trading cripto (guardarraíles primero).",
+        description="Crypto trading bot (guardrails first).",
     )
     parser.add_argument("--version", action="version", version=f"olibuguard {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_smoke = sub.add_parser(
-        "smoke", help="Arranca, lee config, auto-chequea el risk gate y termina."
+        "smoke", help="Start, read config, self-check the risk gate and exit."
     )
-    p_smoke.add_argument("--config", default=None, help="Ruta a config.yaml (opcional).")
+    p_smoke.add_argument("--config", default=None, help="Path to config.yaml (optional).")
 
-    p_run = sub.add_parser("run", help="Arranca el bot en un modo concreto.")
+    p_run = sub.add_parser("run", help="Start the bot in a specific mode.")
     p_run.add_argument("--mode", default=None, help="backtest | paper | live")
-    p_run.add_argument("--config", default=None, help="Ruta a config.yaml (opcional).")
+    p_run.add_argument("--config", default=None, help="Path to config.yaml (optional).")
     p_run.add_argument(
         _LIVE_FLAG,
         dest="i_understand_this_is_real_money",
         action="store_true",
-        help="Confirmación obligatoria para operar en LIVE con dinero real.",
+        help="Mandatory confirmation to trade LIVE with real money.",
     )
 
     args = parser.parse_args(argv)

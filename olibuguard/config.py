@@ -1,4 +1,4 @@
-"""Configuración validada con pydantic. Defaults conservadores."""
+"""Configuration validated with pydantic. Conservative defaults."""
 
 from __future__ import annotations
 
@@ -11,21 +11,21 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class RiskLimits(BaseModel):
-    """Límites duros y circuit breakers (secciones 5.2/5.3). El risk gate los aplica
-    antes de cada orden. Todos los porcentajes son fracciones (0.02 = 2%)."""
+    """Hard limits and circuit breakers (sections 5.2/5.3). The risk gate applies
+    them before every order. All percentages are fractions (0.02 = 2%)."""
 
     model_config = ConfigDict(extra="forbid")
 
-    # Sizing dinámico: máximo riesgo por operación como fracción del capital real.
+    # Dynamic sizing: max risk per trade as a fraction of real capital.
     max_risk_per_trade_pct: float = Field(default=0.02, gt=0, le=1)
-    # Caps absolutos (cinturón y tirantes sobre el sizing dinámico).
+    # Absolute caps (belt and suspenders on top of dynamic sizing).
     max_position_quote: Decimal = Field(default=Decimal("50"), gt=0)
     max_total_exposure_quote: Decimal = Field(default=Decimal("200"), gt=0)
     max_open_positions: int = Field(default=3, ge=0)
-    min_order_quote: Decimal = Field(default=Decimal("10"), gt=0)  # mínimo nocional
+    min_order_quote: Decimal = Field(default=Decimal("10"), gt=0)  # min notional
     max_orders_per_minute: int = Field(default=6, ge=0)
-    max_slippage_pct: float = Field(default=0.005, ge=0)  # fracción: 0.005 = 0.5%
-    # Circuit breakers (kill-switch automático).
+    max_slippage_pct: float = Field(default=0.005, ge=0)  # fraction: 0.005 = 0.5%
+    # Circuit breakers (automatic kill-switch).
     daily_loss_limit_pct: float = Field(default=0.05, gt=0, le=1)
     max_drawdown_pct: float = Field(default=0.10, gt=0, le=1)
     whitelist: list[str] = Field(default_factory=lambda: ["BTC/USDT", "ETH/USDT"])
@@ -33,7 +33,7 @@ class RiskLimits(BaseModel):
 
 
 class AIConfig(BaseModel):
-    """IA opcional (sección 7). Default deshabilitada; boto3 no se importa si no."""
+    """Optional AI (section 7). Disabled by default; boto3 is not imported if off."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -66,5 +66,5 @@ def load_config(path: Path) -> AppConfig:
     if raw is None:
         return AppConfig()
     if not isinstance(raw, dict):
-        raise ValueError(f"config en {path} no es un mapping YAML válido")
+        raise ValueError(f"config at {path} is not a valid YAML mapping")
     return AppConfig.model_validate(raw)

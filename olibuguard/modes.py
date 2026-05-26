@@ -1,7 +1,7 @@
-"""Modos de operación del proceso.
+"""Process operating modes.
 
-Separación dura (sección 5.1 del diseño): el modo se fija al arrancar y no
-cambia en runtime. El binario no puede pasar de ``paper`` a ``live`` solo.
+Hard separation (design section 5.1): the mode is fixed at startup and never
+changes at runtime. The process cannot switch from ``paper`` to ``live`` on its own.
 """
 
 from __future__ import annotations

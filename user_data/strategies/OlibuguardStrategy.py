@@ -1,17 +1,17 @@
-"""Adaptador fino entre Freqtrade y el núcleo olibuguard.
+"""Thin adapter between Freqtrade and the olibuguard core.
 
-El núcleo (olibuguard.*) NO conoce Freqtrade. Esta clase traduce el mundo de
-Freqtrade (DataFrames, floats) a nuestros tipos de dominio (Decimal, OrderIntent,
-PortfolioState) y engancha el risk gate como segunda red de seguridad:
+The core (olibuguard.*) does not know Freqtrade. This class translates the
+Freqtrade world (DataFrames, floats) into our domain types (Decimal, OrderIntent,
+PortfolioState) and wires the risk gate as a second safety net:
 
-  - populate_*_trend     -> señales (estrategia EMA20/50 de ejemplo, Fase 1)
-  - custom_stake_amount  -> dimensionado: el risk gate capa el stake (% del capital)
-  - confirm_trade_entry  -> última compuerta: veto por slippage / límites
+  - populate_*_trend     -> signals (example EMA20/50 strategy, Phase 1)
+  - custom_stake_amount  -> sizing: the risk gate caps the stake (% of capital)
+  - confirm_trade_entry  -> final gate: veto by slippage / limits
 
-El equity real se lee de self.wallets para el sizing por % del capital. El P&L
-diario y el pico de equity (para los circuit breakers del gate) se afinan en Fase 2;
-mientras tanto el kill-switch en vivo lo cubren las `protections` de Freqtrade
-(MaxDrawdown/StoplossGuard) configuradas en user_data/config.json.
+Real equity is read from self.wallets for %-of-capital sizing. Daily PnL and the
+equity peak (for the gate circuit breakers) are refined in Phase 2; meanwhile the
+live kill-switch is covered by the Freqtrade `protections` (MaxDrawdown /
+StoplossGuard) defined in this strategy.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ class OlibuguardStrategy(IStrategy):
 
     @property
     def protections(self) -> list[dict[str, Any]]:
-        # Kill-switch a nivel Freqtrade (segunda red sobre los circuit breakers del gate).
+        # Kill-switch at the Freqtrade level (second net over the gate circuit breakers).
         return [
             {"method": "CooldownPeriod", "stop_duration_candles": 2},
             {
@@ -124,7 +124,7 @@ class OlibuguardStrategy(IStrategy):
             return 0.0
         approved = float(verdict.intent.quote_amount)
         if min_stake is not None and approved < min_stake:
-            return 0.0  # por debajo del mínimo del exchange => Freqtrade no entra
+            return 0.0  # below the exchange minimum => Freqtrade does not enter
         return min(approved, max_stake)
 
     def confirm_trade_entry(

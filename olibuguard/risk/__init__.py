@@ -1,1 +1,1 @@
-"""Risk gate: el módulo invariante. La estrategia propone, el risk gate dispone."""
+"""Risk gate: the invariant module. The strategy proposes, the risk gate decides."""

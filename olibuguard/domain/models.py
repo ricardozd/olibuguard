@@ -1,6 +1,6 @@
-"""Tipos de dominio (value objects inmutables).
+"""Domain types (immutable value objects).
 
-Dinero siempre en ``Decimal``. Timestamps siempre tz-aware (almacenamiento UTC).
+Money is always ``Decimal``. Timestamps are always tz-aware (stored in UTC).
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ class SignalAction(StrEnum):
 
 
 def side_for(action: SignalAction) -> Side | None:
-    """Lado de orden para una acción de señal. ``HOLD`` no opera (``None``)."""
+    """Order side for a signal action. ``HOLD`` does not trade (``None``)."""
     if action is SignalAction.BUY:
         return Side.BUY
     if action is SignalAction.SELL:
@@ -37,7 +37,7 @@ class _Frozen(BaseModel):
 
 
 class MarketContext(_Frozen):
-    """Foto de mercado que ven la estrategia y el advisor."""
+    """Market snapshot seen by the strategy and the advisor."""
 
     symbol: str
     timestamp: datetime
@@ -48,15 +48,15 @@ class MarketContext(_Frozen):
     @classmethod
     def _require_tz(cls, value: datetime) -> datetime:
         if value.tzinfo is None:
-            raise ValueError("timestamp debe ser tz-aware (UTC)")
+            raise ValueError("timestamp must be tz-aware (UTC)")
         return value
 
 
 class StrategySignal(_Frozen):
-    """Lo que la estrategia PROPONE. No conoce la cuenta ni los límites.
+    """What the strategy PROPOSES. Knows nothing about the account or the limits.
 
-    ``size_fraction`` es la fracción del presupuesto por operación a usar; la
-    estrategia nunca ve el tamaño absoluto de la cuenta.
+    ``size_fraction`` is the fraction of the per-trade budget to use; the strategy
+    never sees the absolute account size.
     """
 
     action: SignalAction
@@ -67,11 +67,11 @@ class StrategySignal(_Frozen):
 
 
 class OrderIntent(_Frozen):
-    """Intención de orden concreta, candidata a pasar por el risk gate.
+    """A concrete order intent, candidate to pass through the risk gate.
 
-    ``reference_price`` es el precio de la señal; ``execution_price`` (si se conoce)
-    es el precio al que se ejecutaría. El gate veta si el slippage entre ambos supera
-    el máximo tolerado.
+    ``reference_price`` is the signal price; ``execution_price`` (if known) is the
+    price it would execute at. The gate vetoes when the slippage between the two
+    exceeds the tolerated maximum.
     """
 
     symbol: str
@@ -83,10 +83,10 @@ class OrderIntent(_Frozen):
 
 
 class PortfolioState(_Frozen):
-    """Estado de cartera que el risk gate necesita para decidir.
+    """Portfolio state the risk gate needs to decide.
 
-    Valores neutros por defecto (equity/peak = 0) desactivan el sizing por % y los
-    circuit breakers, dejando solo los caps absolutos: útil para tests y arranque.
+    Neutral defaults (equity/peak = 0) disable %-based sizing and the circuit
+    breakers, leaving only the absolute caps: handy for tests and startup.
     """
 
     open_exposure_quote: Decimal = Field(default=Decimal("0"), ge=0)
@@ -98,7 +98,7 @@ class PortfolioState(_Frozen):
 
 
 class RiskVerdict(_Frozen):
-    """Veredicto del risk gate. Aprueba, reduce el tamaño o rechaza."""
+    """Risk gate verdict. Approves, shrinks the size, or rejects."""
 
     approved: bool
     reason: str

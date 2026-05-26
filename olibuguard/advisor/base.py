@@ -1,7 +1,7 @@
-"""Interfaz del AI advisor y la implementación nula por defecto.
+"""AI advisor interface and the default null implementation.
 
-Salvaguarda (sección 7): la IA SOLO puede vetar o reducir una operación, nunca
-iniciarla ni agrandarla. ``clamp_advisor_factor`` materializa esa invariante.
+Safeguard (section 7): the AI can ONLY veto or shrink a trade, never start it or
+enlarge it. ``clamp_advisor_factor`` materializes that invariant.
 """
 
 from __future__ import annotations
@@ -23,22 +23,22 @@ class AdvisorOpinion(BaseModel):
 @runtime_checkable
 class AIAdvisor(Protocol):
     def opinion(self, context: MarketContext) -> AdvisorOpinion | None:
-        """None si el advisor no quiere opinar o está deshabilitado."""
+        """None if the advisor does not want to opine or is disabled."""
         ...
 
 
 class NullAdvisor:
-    """Advisor por defecto: nunca opina."""
+    """Default advisor: never opines."""
 
     def opinion(self, context: MarketContext) -> AdvisorOpinion | None:
         return None
 
 
 def clamp_advisor_factor(bias: float) -> float:
-    """Convierte el bias del advisor en un factor de tamaño en ``[0, 1]``.
+    """Turn the advisor bias into a size factor in ``[0, 1]``.
 
-    Bias positivo no agranda nada (tope 1.0). Bias negativo reduce hasta 0
-    (veto total en -1). Así la IA jamás puede aumentar la exposición.
+    A positive bias enlarges nothing (capped at 1.0). A negative bias shrinks down
+    to 0 (full veto at -1). This way the AI can never increase exposure.
     """
     if bias >= 0:
         return 1.0

@@ -1,7 +1,7 @@
-"""Puertos (interfaces) del núcleo hexagonal.
+"""Ports (interfaces) of the hexagonal core.
 
-El orquestador habla solo con estos Protocols; los adaptadores concretos
-(ccxt, SQLite, etc.) los implementan en las capas externas.
+The orchestrator talks only to these Protocols; concrete adapters (ccxt, SQLite,
+etc.) implement them in the outer layers.
 """
 
 from __future__ import annotations

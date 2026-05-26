@@ -1,14 +1,14 @@
-"""Risk gate: el módulo invariante. La estrategia propone, el risk gate dispone.
+"""Risk gate: the invariant module. The strategy proposes, the risk gate decides.
 
-Orden de evaluación (fail-safe; corta en la primera infracción):
-  1. Circuit breakers (kill-switch): drawdown desde pico y pérdida diaria.
-  2. Whitelist / blacklist de pares.
-  3. Anti-runaway: tasa de órdenes por minuto.
-  4. Slippage entre precio de señal y de ejecución.
-  5. Sizing: % del capital + caps absolutos + exposición disponible.
-  6. Mínimo nocional.
+Evaluation order (fail-safe; stops at the first violation):
+  1. Circuit breakers (kill-switch): drawdown from peak and daily loss.
+  2. Pair whitelist / blacklist.
+  3. Anti-runaway: orders-per-minute rate.
+  4. Slippage between signal and execution price.
+  5. Sizing: % of capital + absolute caps + available exposure.
+  6. Minimum notional.
 
-Puede rechazar o REDUCIR el tamaño, nunca agrandarlo.
+It may reject or SHRINK the size, never enlarge it.
 """
 
 from __future__ import annotations
@@ -39,39 +39,37 @@ class RiskGate:
         limits = self._limits
 
         if intent.symbol in limits.blacklist:
-            return _reject(f"par {intent.symbol} en blacklist")
+            return _reject(f"pair {intent.symbol} in blacklist")
         if limits.whitelist and intent.symbol not in limits.whitelist:
-            return _reject(f"par {intent.symbol} fuera de whitelist")
+            return _reject(f"pair {intent.symbol} not in whitelist")
 
         if state.orders_last_minute >= limits.max_orders_per_minute:
-            return _reject("límite de órdenes por minuto alcanzado")
+            return _reject("max orders per minute reached")
 
         if intent.execution_price is not None and intent.reference_price > 0:
             slippage = abs(intent.execution_price - intent.reference_price) / intent.reference_price
             if slippage > _pct(limits.max_slippage_pct):
                 return _reject(
-                    f"slippage {slippage:.4%} supera el máximo {limits.max_slippage_pct:.4%}"
+                    f"slippage {slippage:.4%} exceeds max {limits.max_slippage_pct:.4%}"
                 )
 
         amount = self._cap_size(intent, state)
         if intent.side is Side.BUY:
             if state.open_positions >= limits.max_open_positions:
-                return _reject("número máximo de posiciones abiertas alcanzado")
+                return _reject("max open positions reached")
             available = limits.max_total_exposure_quote - state.open_exposure_quote
             if available <= 0:
-                return _reject("exposición total máxima alcanzada")
+                return _reject("max total exposure reached")
             amount = min(amount, available)
 
         if amount < limits.min_order_quote:
-            return _reject(
-                f"tamaño {amount} por debajo del mínimo nocional {limits.min_order_quote}"
-            )
+            return _reject(f"size {amount} below min notional {limits.min_order_quote}")
 
         if amount == intent.quote_amount:
-            return RiskVerdict(approved=True, reason="aprobada", intent=intent)
+            return RiskVerdict(approved=True, reason="approved", intent=intent)
         final = intent.model_copy(update={"quote_amount": amount})
         return RiskVerdict(
-            approved=True, reason=f"aprobada con tamaño reducido a {amount}", intent=final
+            approved=True, reason=f"approved with size reduced to {amount}", intent=final
         )
 
     def _tripped_breaker(self, state: PortfolioState) -> str | None:
@@ -84,8 +82,8 @@ class RiskGate:
             daily_limit = state.equity_quote * _pct(limits.daily_loss_limit_pct)
             if state.realized_pnl_today_quote <= -daily_limit:
                 return (
-                    f"circuit breaker: pérdida diaria {state.realized_pnl_today_quote} "
-                    f"alcanza el límite -{daily_limit}"
+                    f"circuit breaker: daily loss {state.realized_pnl_today_quote} "
+                    f"hit limit -{daily_limit}"
                 )
         return None
 

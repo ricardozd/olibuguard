@@ -1,6 +1,6 @@
-"""Acceso a secretos vía keyring del sistema (DPAPI en Windows, Keychain en mac).
+"""Secret access via the system keyring (DPAPI on Windows, Keychain on macOS).
 
-Las API keys NO viven en archivos planos (sección 5.6).
+Exchange API keys never live in plaintext files (section 5.6).
 """
 
 from __future__ import annotations

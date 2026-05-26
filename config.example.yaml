@@ -1,6 +1,6 @@
-# Config de ejemplo. Copia a config.yaml y ajusta.
-# Los defaults del código ya son conservadores; esto los hace explícitos.
-# Cantidades monetarias como string para preservar precisión (Decimal).
+# Example config. Copy to config.yaml and adjust.
+# The code defaults are already conservative; this just makes them explicit.
+# Money amounts as strings to preserve precision (Decimal).
 
 exchange:
   name: binance
@@ -10,26 +10,26 @@ exchange:
 timeframe: "1h"
 
 risk:
-  # Sizing dinámico: máximo riesgo por operación como fracción del capital real.
-  max_risk_per_trade_pct: 0.02      # 2% del equity
-  # Caps absolutos (cinturón y tirantes sobre el sizing dinámico).
-  max_position_quote: "50"          # máx por operación (quote, p.ej. USDT)
-  max_total_exposure_quote: "200"   # máx suma de posiciones abiertas
+  # Dynamic sizing: max risk per trade as a fraction of real capital.
+  max_risk_per_trade_pct: 0.02      # 2% of equity
+  # Absolute caps (belt and suspenders on top of dynamic sizing).
+  max_position_quote: "50"          # max per trade (quote, e.g. USDT)
+  max_total_exposure_quote: "200"   # max sum of open positions
   max_open_positions: 3
-  min_order_quote: "10"             # mínimo nocional (fees > P&L por debajo)
+  min_order_quote: "10"             # min notional (fees > P&L below this)
   max_orders_per_minute: 6          # anti runaway
-  max_slippage_pct: 0.005           # fracción: 0.005 = 0.5%
-  # Circuit breakers (kill-switch automático).
-  daily_loss_limit_pct: 0.05        # 5% del equity en el día => STOP
-  max_drawdown_pct: 0.10            # 10% desde el pico de equity => STOP
+  max_slippage_pct: 0.005           # fraction: 0.005 = 0.5%
+  # Circuit breakers (automatic kill-switch).
+  daily_loss_limit_pct: 0.05        # 5% of equity in a day => STOP
+  max_drawdown_pct: 0.10            # 10% from the equity peak => STOP
   whitelist:
     - BTC/USDT
     - ETH/USDT
   blacklist: []
 
 ai:
-  enabled: false      # default: el bot funciona sin IA (NullAdvisor)
-  provider: "null"    # "null" | "bedrock"  (¡comillas! null sin comillas es None en YAML)
+  enabled: false      # default: the bot works without AI (NullAdvisor)
+  provider: "null"    # "null" | "bedrock"  (quotes! unquoted null is None in YAML)
   model: ""
-  weight: 0.0         # peso que la estrategia da al advisor (0 = lo ignora)
+  weight: 0.0         # weight the strategy gives the advisor (0 = ignores it)
   region: eu-west-1

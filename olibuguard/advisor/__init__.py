@@ -1,1 +1,1 @@
-"""AI advisor opcional. Default NullAdvisor: el bot funciona sin IA."""
+"""Optional AI advisor. Default NullAdvisor: the bot works without AI."""

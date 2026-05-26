@@ -21,7 +21,7 @@ def test_null_advisor_satisfies_protocol() -> None:
 
 def test_advisor_can_only_reduce_never_amplify() -> None:
     assert clamp_advisor_factor(1.0) == 1.0
-    assert clamp_advisor_factor(0.5) == 1.0  # bias positivo NO agranda
+    assert clamp_advisor_factor(0.5) == 1.0  # positive bias does NOT increase
     assert clamp_advisor_factor(0.0) == 1.0
     assert clamp_advisor_factor(-0.5) == 0.5
-    assert clamp_advisor_factor(-1.0) == 0.0  # veto total
+    assert clamp_advisor_factor(-1.0) == 0.0  # full veto

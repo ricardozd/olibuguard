@@ -1,6 +1,6 @@
-"""Logging estructurado con structlog. JSON por defecto.
+"""Structured logging with structlog. JSON by default.
 
-Regla de seguridad (5.6): nunca loggear secretos, ni enmascarados.
+Security rule (5.6): never log secrets, not even masked.
 """
 
 from __future__ import annotations

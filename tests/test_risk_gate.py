@@ -45,7 +45,7 @@ def _buy(symbol: str, amount: Decimal) -> OrderIntent:
     )
 
 
-# --- Límites duros (caps absolutos) -----------------------------------------
+# --- Hard limits (absolute caps) ---
 
 
 def test_rejects_blacklisted_pair() -> None:
@@ -107,7 +107,7 @@ def test_approves_valid_order_unchanged() -> None:
     assert verdict.intent == intent
 
 
-# --- Sizing dinámico (% del capital) ----------------------------------------
+# --- Dynamic sizing (% of capital) ---
 
 
 def test_position_sizing_caps_to_pct_of_equity() -> None:
@@ -116,10 +116,10 @@ def test_position_sizing_caps_to_pct_of_equity() -> None:
     verdict = gate.evaluate(_buy("BTC/USDT", Decimal("500")), state)
     assert verdict.approved
     assert verdict.intent is not None
-    assert verdict.intent.quote_amount == Decimal("20")  # 2% de 1000
+    assert verdict.intent.quote_amount == Decimal("20")  # 2% of 1000
 
 
-# --- Circuit breakers (kill-switch automático) ------------------------------
+# --- Circuit breakers (automatic kill-switch) ---
 
 
 def test_circuit_breaker_drawdown_halts() -> None:
@@ -139,10 +139,10 @@ def test_circuit_breaker_daily_loss_halts() -> None:
     )
     verdict = gate.evaluate(_buy("BTC/USDT", Decimal("50")), state)
     assert not verdict.approved
-    assert "diaria" in verdict.reason
+    assert "daily loss" in verdict.reason
 
 
-# --- Slippage ---------------------------------------------------------------
+# --- Slippage ---
 
 
 def test_slippage_veto() -> None:
@@ -172,7 +172,7 @@ def test_slippage_within_tolerance_ok() -> None:
     assert verdict.approved
 
 
-# --- Propiedades ------------------------------------------------------------
+# --- Properties ---
 
 
 @given(
@@ -199,9 +199,9 @@ def test_property_never_increases_and_respects_caps(amount: Decimal, exposure: D
     if verdict.approved:
         assert verdict.intent is not None
         approved = verdict.intent.quote_amount
-        assert approved <= amount  # nunca agranda
-        assert approved <= limits.max_position_quote  # cap por operación
-        assert exposure + approved <= limits.max_total_exposure_quote  # exposición total
+        assert approved <= amount  # never increases
+        assert approved <= limits.max_position_quote  # per-trade cap
+        assert exposure + approved <= limits.max_total_exposure_quote  # total exposure
 
 
 @given(

@@ -1,8 +1,8 @@
-"""Orquestador: el loop de decisión.
+"""Orchestrator: the decision loop.
 
-tick → market data → strategy → risk gate → order manager. Habla solo con
-puertos; no conoce adaptadores concretos. El sizing real llega en Fase 1; aquí
-se aplica un presupuesto fijo por operación sobre la fracción que pide la señal.
+tick -> market data -> strategy -> risk gate -> order manager. Talks only to
+ports; knows nothing about concrete adapters. Real sizing arrives in Phase 1;
+here a fixed per-trade budget is applied to the fraction the signal requests.
 """
 
 from __future__ import annotations

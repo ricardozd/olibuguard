@@ -1,1 +1,1 @@
-"""Núcleo de dominio: tipos y puertos. No conoce exchange, IA ni persistencia."""
+"""Domain core: types and ports. Knows nothing about the exchange, AI or persistence."""
