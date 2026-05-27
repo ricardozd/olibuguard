@@ -227,3 +227,7 @@ user_data/plot/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+
+# Personal config with secrets/profile names — never commit
+user_data/config.yaml
+config.yaml
