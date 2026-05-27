@@ -36,6 +36,7 @@ from pandas import DataFrame
 from freqtrade.persistence import Trade
 from freqtrade.strategy import IStrategy
 
+from olibuguard.alerts.sink import AlertSink, NullAlertSink
 from olibuguard.audit.records import DecisionAudit, EquityPoint
 from olibuguard.audit.sink import AuditReader, AuditSink, NullAuditSink
 from olibuguard.audit.version import code_version
@@ -107,9 +108,30 @@ class OlibuguardStrategy(IStrategy):
                 "kill_switch_active_at_startup: path=%s", self._kill_switch.path
             )
 
-        # Error budget (F): 5 consecutive wallet-read failures → activate kill switch.
+        # Alert sink (G): try Telegram, fall back to no-op (fail-safe).
+        alert: AlertSink = NullAlertSink()
+        token = os.environ.get("TELEGRAM_BOT_TOKEN")
+        chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+        if token and chat_id:
+            try:
+                from olibuguard.alerts.telegram import TelegramAlertSink
+
+                alert = TelegramAlertSink(token=token, chat_id=chat_id)
+                logger.info("telegram_alerts_enabled: chat_id=%s", chat_id)
+            except Exception as exc:
+                logger.warning("telegram_alerts_unavailable: %s", exc)
+        self._alert_sink: AlertSink = alert
+
+        # Error budget (F): 5 consecutive wallet-read failures → kill switch + alert.
         self._equity_budget = ErrorBudget(
-            "equity_read", max_consecutive=5, kill_switch=self._kill_switch
+            "equity_read",
+            max_consecutive=5,
+            kill_switch=self._kill_switch,
+            on_exhausted=lambda: self._alert(
+                "OLIBUGUARD: KILL SWITCH ACTIVATED\n"
+                "Reason: equity_read error budget exhausted (5 consecutive failures)\n"
+                "Action: check exchange connectivity, then run: task resume"
+            ),
         )
 
         # Reconciliation (E): restore peak equity from the audit DB so the drawdown
@@ -126,6 +148,15 @@ class OlibuguardStrategy(IStrategy):
                 current_equity,
             )
 
+        # Startup alert (G).
+        ks_status = "ACTIVE — no new entries" if self._kill_switch.is_active() else "inactive"
+        self._alert(
+            f"olibuguard started\n"
+            f"version: {getattr(self, '_code_version', 'unknown')}\n"
+            f"peak_equity: {self._peak_equity}\n"
+            f"kill_switch: {ks_status}"
+        )
+
     def _gate(self) -> RiskGate:
         gate = getattr(self, "_risk", None)
         if gate is None:
@@ -139,6 +170,17 @@ class OlibuguardStrategy(IStrategy):
             sink = NullAuditSink()
             self._audit = sink
         return sink
+
+    def _alerts(self) -> AlertSink:
+        sink = getattr(self, "_alert_sink", None)
+        if sink is None:
+            sink = NullAlertSink()
+            self._alert_sink = sink
+        return sink
+
+    def _alert(self, message: str) -> None:
+        """Send an alert notification; never raises (fail-safe)."""
+        run_safe("alert_send", lambda: self._alerts().send(message), None)
 
     def _ks(self) -> KillSwitch:
         ks = getattr(self, "_kill_switch", None)
@@ -170,6 +212,14 @@ class OlibuguardStrategy(IStrategy):
             code_version=getattr(self, "_code_version", "unknown"),
         )
         run_safe("audit_decision", lambda: self._sink().record_decision(record), None)
+        # Alert on circuit breaker trips (G).
+        if not verdict.approved and verdict.reason.startswith("circuit breaker"):
+            self._alert(
+                f"OLIBUGUARD: CIRCUIT BREAKER TRIPPED\n"
+                f"pair: {symbol}  kind: {kind}\n"
+                f"reason: {verdict.reason}\n"
+                f"equity: {equity}"
+            )
 
     def bot_loop_start(self, current_time: datetime, **kwargs: Any) -> None:
         """Record equity snapshot and check for unexpected intra-candle drift (E+C)."""
@@ -183,6 +233,7 @@ class OlibuguardStrategy(IStrategy):
                 warning = check_equity_drift(last.equity_quote, equity)
                 if warning:
                     logger.warning("reconciliation.%s", warning)
+                    self._alert(f"OLIBUGUARD: EQUITY DRIFT\n{warning}")
 
         run_safe(
             "audit_equity",

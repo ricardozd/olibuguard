@@ -32,13 +32,15 @@ class ErrorBudget:
     """Track consecutive errors for a named operation.
 
     On success, the counter resets to zero. When consecutive errors reach
-    *max_consecutive*, the optional *kill_switch* is activated with a
-    human-readable reason and the event is logged at ERROR level.
+    *max_consecutive* (exactly), the optional *kill_switch* is activated and
+    *on_exhausted* is called — both fire exactly once at the threshold.
 
     Args:
-        name:             Short identifier used in log messages and kill-switch reason.
-        max_consecutive:  Number of consecutive failures before the budget is exhausted.
+        name:             Short identifier for log messages and the kill-switch reason.
+        max_consecutive:  Number of consecutive failures before exhaustion.
         kill_switch:      Optional kill switch to activate on exhaustion.
+        on_exhausted:     Optional zero-argument callback invoked exactly once at
+                          exhaustion (e.g. to send an alert).
     """
 
     def __init__(
@@ -46,10 +48,12 @@ class ErrorBudget:
         name: str,
         max_consecutive: int,
         kill_switch: KillSwitch | None = None,
+        on_exhausted: Callable[[], None] | None = None,
     ) -> None:
         self._name = name
         self._max = max_consecutive
         self._kill_switch = kill_switch
+        self._on_exhausted = on_exhausted
         self._count = 0
 
     @property
@@ -67,7 +71,7 @@ class ErrorBudget:
         self._count = 0
 
     def record_error(self, exc: BaseException) -> None:
-        """Increment counter; activate kill switch if budget is exhausted."""
+        """Increment counter; activate kill switch and fire on_exhausted at threshold."""
         self._count += 1
         _logger.warning(
             "error_budget.increment name=%s consecutive=%d/%d exc=%s",
@@ -76,7 +80,8 @@ class ErrorBudget:
             self._max,
             exc,
         )
-        if self.exhausted and self._kill_switch is not None:
+        # Fire exactly once when we reach the threshold.
+        if self._count == self._max:
             reason = (
                 f"error_budget_exhausted: {self._name} "
                 f"({self._count} consecutive errors — last: {exc})"
@@ -84,7 +89,10 @@ class ErrorBudget:
             _logger.error(
                 "error_budget.exhausted name=%s activating_kill_switch=true", self._name
             )
-            self._kill_switch.activate(reason=reason)
+            if self._kill_switch is not None:
+                self._kill_switch.activate(reason=reason)
+            if self._on_exhausted is not None:
+                self._on_exhausted()
 
 
 def run_safe[T](
