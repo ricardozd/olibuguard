@@ -225,7 +225,6 @@ class OlibuguardStrategy(IStrategy):
         return self.config.get("runmode", RunMode.OTHER) in (
             RunMode.LIVE,
             RunMode.DRY_RUN,
-            RunMode.PAPER,
         )
 
     def _alert(self, message: str) -> None:
