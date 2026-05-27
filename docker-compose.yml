@@ -14,10 +14,10 @@ services:
         required: false
     volumes:
       - "./user_data:/freqtrade/user_data"
-    # api_server is disabled by default; if you enable it for health checks,
-    # expose the port on loopback only:
-    # ports:
-    #   - "127.0.0.1:8080:8080"
+    # FreqUI (Freqtrade web interface) — accessible at http://localhost:8080
+    # Bound to loopback only: never reachable from the network.
+    ports:
+      - "127.0.0.1:8080:8080"
     command: >
       trade
       --config /freqtrade/user_data/config.json

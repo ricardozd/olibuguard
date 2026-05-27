@@ -76,6 +76,28 @@ tasks:
         uv run freqtrade backtesting --userdir {{.USERDIR}} --config {{.FT_CONFIG}}
         --strategy {{.STRATEGY}} --enable-protections {{.CLI_ARGS}}
 
+  paper:
+    desc: Start Freqtrade in paper (dry-run) mode natively — live market data, no real orders
+    cmds:
+      - >-
+        uv run freqtrade trade --userdir {{.USERDIR}} --config {{.FT_CONFIG}}
+        --strategy {{.STRATEGY}} {{.CLI_ARGS}}
+
+  docker-up:
+    desc: Build and start the bot as a 24/7 Docker daemon (FreqUI at http://localhost:8080)
+    cmds:
+      - docker compose up --build -d
+
+  docker-down:
+    desc: Stop the Docker daemon gracefully
+    cmds:
+      - docker compose down
+
+  docker-logs:
+    desc: Tail bot logs from Docker
+    cmds:
+      - docker compose logs -f olibuguard
+
   kill:
     desc: Activate the kill switch — bot stops opening new positions immediately
     cmds:

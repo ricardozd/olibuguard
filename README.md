@@ -156,10 +156,76 @@ task download -- --timerange 20250101-20250401
 task backtest -- --timerange 20250101-20250401
 ```
 
-**Docker (24/7 dry-run daemon):**
+**Paper trading (native, foreground):**
 ```bash
-docker compose up --build -d
+task paper          # Freqtrade trade --dry-run, logs to terminal
 ```
+
+**Docker (24/7 dry-run daemon — recommended for the 4-week window):**
+```bash
+task docker-up      # build + start daemon; FreqUI at http://localhost:8080
+task docker-logs    # tail logs
+task docker-down    # graceful stop
+```
+
+---
+
+## Paper trading — start-up guide
+
+This is the **Phase 2 exit criterion**: ≥ 4 weeks of dry-run against live Binance market data
+without crashes, erratic orders, or unexplained P&L divergence.
+
+### 1. Get a Binance API key
+Create a **read-only** key (spot trading enabled, withdrawal **disabled**, IP whitelist recommended).
+Even for dry-run, Freqtrade needs credentials to stream live OHLCV data.
+
+### 2. Configure `.env`
+```bash
+cp .env.example .env
+```
+Fill in at minimum:
+```bash
+FREQTRADE__EXCHANGE__KEY=<your-key>
+FREQTRADE__EXCHANGE__SECRET=<your-secret>
+
+# Optional — strongly recommended for 4 weeks of unattended monitoring:
+TELEGRAM_BOT_TOKEN=<token from @BotFather>
+TELEGRAM_CHAT_ID=<your chat ID>
+
+# FreqUI credentials (change from the placeholder defaults):
+FREQTRADE__API_SERVER__PASSWORD=<your-password>
+FREQTRADE__API_SERVER__JWT_SECRET_KEY=<long-random-string>
+```
+
+### 3. Start the daemon
+```bash
+task docker-up
+```
+First run builds the image (~2 min). Subsequent starts are instant.
+
+### 4. Verify it is running
+Open **http://localhost:8080** — FreqUI shows open trades, equity curve, and recent decisions.
+Log in with username `olibuguard` and the password you set in `.env`.
+
+```bash
+task docker-logs    # live log stream; look for "olibuguard started" at the top
+```
+
+### 5. Test the kill switch (required before Phase 3)
+```bash
+task kill -- --reason "kill-switch pre-flight test"
+# verify: FreqUI shows no new entries opening
+task resume
+# verify: bot resumes on the next candle
+```
+
+### 6. Watch for 4 weeks
+The audit DB (`user_data/olibuguard_audit.sqlite`) records every decision. After the window:
+- No crashes or unhandled exceptions in the logs.
+- No unexplained equity jumps (audit DB drift checks are your early warning).
+- Circuit breakers tested at least once (use `task kill/resume` to simulate).
+
+When criteria are met → Phase 3 (optional AI) or Phase 4 (live with minimum capital).
 
 ---
 

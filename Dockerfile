@@ -1,11 +1,11 @@
-# Imagen de despliegue: Freqtrade oficial + el paquete olibuguard instalado,
-# para que user_data/strategies/OlibuguardStrategy.py pueda importar olibuguard.*
-# El desarrollo es nativo (uv); este contenedor es para correr el bot 24/7.
+# Deployment image: official Freqtrade + the olibuguard package installed so that
+# user_data/strategies/OlibuguardStrategy.py can import olibuguard.*
+# Development is done natively (uv); this container is for running the bot 24/7.
 FROM freqtradeorg/freqtrade:stable
 
 USER root
 
-# Instala solo el núcleo olibuguard (freqtrade ya viene en la imagen base).
+# Install only the olibuguard core (freqtrade is already in the base image).
 WORKDIR /tmp/build
 COPY pyproject.toml ./
 COPY README.md ./README.md
