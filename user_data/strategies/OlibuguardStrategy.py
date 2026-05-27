@@ -54,12 +54,12 @@ logger = logging.getLogger(__name__)
 class OlibuguardStrategy(IStrategy):
     INTERFACE_VERSION = 3
 
-    timeframe = "1h"
+    timeframe = "15m"
     can_short = False
     stoploss = -0.10
     minimal_roi = {"0": 0.10}
     process_only_new_candles = True
-    startup_candle_count = 50
+    startup_candle_count = 50  # EMA50 needs 50 candles = ~12 h of 15m data
 
     @property
     def protections(self) -> list[dict[str, Any]]:

@@ -103,9 +103,14 @@ tasks:
         echo "✓ STS credentials written to .env"
 
   docker-up:
-    desc: Build and start the bot as a 24/7 Docker daemon (FreqUI at http://localhost:8080)
+    desc: Build and start in LIVE mode (real orders on Binance)
     cmds:
-      - docker compose up --build -d
+      - FREQTRADE__DRY_RUN=false docker compose up --build -d
+
+  paper-up:
+    desc: Build and start in PAPER mode (dry-run, no real orders)
+    cmds:
+      - FREQTRADE__DRY_RUN=true docker compose up --build -d
 
   docker-down:
     desc: Stop the Docker daemon gracefully

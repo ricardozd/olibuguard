@@ -15,6 +15,11 @@ services:
     # AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN are injected
     # via .env (short-lived STS tokens obtained with `task aws-refresh`).
     # No ~/.aws volume needed — boto3 picks up credentials from the environment.
+    #
+    # Mode override: set FREQTRADE__DRY_RUN=true in .env (or via task paper-up)
+    # to run in paper mode without changing config.json.
+    environment:
+      FREQTRADE__DRY_RUN: ${FREQTRADE__DRY_RUN:-false}
     volumes:
       - "./user_data:/freqtrade/user_data"
     # FreqUI (Freqtrade web interface) — accessible at http://localhost:8081
