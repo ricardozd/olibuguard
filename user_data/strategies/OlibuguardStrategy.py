@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -247,26 +247,35 @@ class OlibuguardStrategy(IStrategy):
             )
 
     def bot_loop_start(self, current_time: datetime, **kwargs: Any) -> None:
-        """Record equity snapshot and check for unexpected intra-candle drift (E+C)."""
-        equity = self._read_equity()
+        """Equity drift check every tick; snapshot written at most every 5 minutes (E+C).
 
-        # Reconciliation (E): warn on unusual equity drift since the last snapshot.
+        process_throttle_secs=5 would produce ~17k rows/day if we wrote every tick.
+        The design intent (§5.7) is "periodic snapshot every N minutes".  The drift
+        check is cheap and still runs on every call so we never miss a spike.
+        """
+        equity = self._read_equity()
         sink = self._sink()
+        last = None
+
         if isinstance(sink, AuditReader):
             last = run_safe("audit_last_equity", sink.last_equity_point, None)
+            # Drift check runs every tick regardless of the snapshot throttle.
             if last is not None:
                 warning = check_equity_drift(last.equity_quote, equity)
                 if warning:
                     logger.warning("reconciliation.%s", warning)
                     self._alert(f"OLIBUGUARD: EQUITY DRIFT\n{warning}")
 
-        run_safe(
-            "audit_equity",
-            lambda: sink.record_equity(
-                EquityPoint(at=current_time.astimezone(UTC), equity_quote=equity)
-            ),
-            None,
-        )
+        # Throttle: write at most once every 5 minutes.
+        # If last is None (first run or non-readable sink) always record.
+        now_utc = current_time.astimezone(UTC)
+        should_record = last is None or (now_utc - last.at >= timedelta(minutes=5))
+        if should_record:
+            run_safe(
+                "audit_equity",
+                lambda: sink.record_equity(EquityPoint(at=now_utc, equity_quote=equity)),
+                None,
+            )
 
     def _read_equity(self) -> Decimal:
         wallets = self.wallets
