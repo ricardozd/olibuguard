@@ -55,18 +55,18 @@ logger = logging.getLogger(__name__)
 class OlibuguardStrategy(IStrategy):
     INTERFACE_VERSION = 3
 
-    timeframe = "5m"
+    timeframe = "15m"
     can_short = False
     stoploss = -0.10          # hard floor: Freqtrade enforces this even if ATR says wider
     use_custom_stoploss = True
-    minimal_roi = {"0": 0.015}  # 1.5% — realistic for 5m; 10% caused almost all exits via stoploss
+    minimal_roi = {"0": 0.07}   # 7% — sweet spot found via ROI sweep (5%→-1.08, 7%→-0.50, 10%→-1.04)
     process_only_new_candles = True
     # 200 candles per timeframe: covers EMA50 on 5m (16 h) and EMA200 on 1h (200 h).
     startup_candle_count = 200
 
     # ATR stoploss multiplier: stop = entry - ATR(14) × multiplier.
     # 2.0 gives room for normal noise; tighten to 1.5 in ranging markets.
-    ATR_MULTIPLIER = 2.0
+    ATR_MULTIPLIER = 3.5
 
     @property
     def protections(self) -> list[dict[str, Any]]:
@@ -394,8 +394,10 @@ class OlibuguardStrategy(IStrategy):
         )
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict[str, Any]) -> DataFrame:
-        dataframe["ema_fast"] = dataframe["close"].ewm(span=20, adjust=False).mean()
-        dataframe["ema_slow"] = dataframe["close"].ewm(span=50, adjust=False).mean()
+        # Golden Cross: EMA 50 (fast) / EMA 200 (slow) on 15m
+        # EMA 50  = ~12.5 h trend · EMA 200 = ~50 h trend — far fewer false signals than 20/50.
+        dataframe["ema_fast"] = dataframe["close"].ewm(span=50, adjust=False).mean()
+        dataframe["ema_slow"] = dataframe["close"].ewm(span=200, adjust=False).mean()
 
         # RSI 14 — Wilder's EWM method (pandas-native, no TA-Lib dependency).
         # clip(0,100) handles inf when there are no losses; fillna(50) handles startup NaN.
@@ -471,11 +473,14 @@ class OlibuguardStrategy(IStrategy):
         current_profit: float,
         **kwargs: Any,
     ) -> float:
-        """ATR-based dynamic stoploss: stop = current_rate - ATR(14) × ATR_MULTIPLIER.
+        """ATR trailing stoploss with break-even protection.
 
-        Falls back to the static -10% floor if ATR data is unavailable (fail-safe).
-        The hard `stoploss = -0.10` class attribute acts as an absolute ceiling so
-        the ATR stop can never exceed -10% from entry.
+        Two layers:
+        1. ATR stop: stop = current_rate - ATR(14) × ATR_MULTIPLIER (trail up with price).
+        2. Break-even lock: once profit ≥ 2%, floor the stop at entry price so a winning
+           trade can never turn into a loss (stops at break-even at worst).
+
+        The hard `stoploss = -0.10` class attribute is the absolute worst-case floor.
         """
         dp = self.dp
         if dp is None:
@@ -488,8 +493,20 @@ class OlibuguardStrategy(IStrategy):
         if atr <= 0:
             return self.stoploss  # fail-safe: bad ATR value
 
-        stop_price = current_rate - atr * self.ATR_MULTIPLIER
-        return stoploss_from_absolute(stop_price, current_rate, is_short=trade.is_short)
+        # Layer 1: ATR trailing stop below current price.
+        atr_stop_price = current_rate - atr * self.ATR_MULTIPLIER
+        atr_stop = stoploss_from_absolute(atr_stop_price, current_rate, is_short=trade.is_short)
+
+        # Layer 2: break-even lock — once we're +2%, never let the stop go below entry.
+        # This converts a 3%-up-then-reversal from a loss into a scratch or small win.
+        if current_profit >= 0.02:
+            open_rate = trade.open_rate
+            # Break-even stop at open_rate (stoploss_from_absolute expects a price).
+            be_stop = stoploss_from_absolute(open_rate, current_rate, is_short=trade.is_short)
+            # Return the higher (less negative) of the two stops — most protective wins.
+            return max(atr_stop, be_stop)
+
+        return atr_stop
 
     def custom_stake_amount(
         self,

@@ -6,7 +6,7 @@
     "fiat_display_currency": "USD",
     "dry_run": false,
     "dry_run_wallet": 100,
-    "timeframe": "5m",
+    "timeframe": "15m",
     "trading_mode": "spot",
     "margin_mode": "",
     "cancel_open_orders_on_exit": false,
@@ -42,8 +42,9 @@
         },
         "ccxt_async_config": {},
         "pair_whitelist": [
-            "BTC/USDT",
-            "ETH/USDT"
+            "ETH/USDT",
+            "SOL/USDT",
+            "BNB/USDT"
         ],
         "pair_blacklist": []
     },

@@ -257,8 +257,11 @@ def test_bedrock_advisor_network_error_returns_none(fake_boto3: Any) -> None:
 
 
 def test_bedrock_advisor_missing_boto3_raises() -> None:
+    # Setting a module to None in sys.modules makes Python treat it as forbidden:
+    # any "import boto3" will raise ImportError even when the package is installed.
     sys.modules.pop("olibuguard.advisor.bedrock", None)
-    saved = sys.modules.pop("boto3", None)
+    saved = sys.modules.get("boto3")
+    sys.modules["boto3"] = None  # type: ignore[assignment]
     try:
         with pytest.raises(ImportError, match="boto3"):
             from olibuguard.advisor.bedrock import BedrockAdvisor
@@ -268,6 +271,8 @@ def test_bedrock_advisor_missing_boto3_raises() -> None:
         sys.modules.pop("olibuguard.advisor.bedrock", None)
         if saved is not None:
             sys.modules["boto3"] = saved
+        else:
+            sys.modules.pop("boto3", None)
 
 
 # ── Prompt content ───────────────────────────────────────────────────────────
