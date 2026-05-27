@@ -12,19 +12,15 @@ services:
     env_file:
       - path: .env
         required: false
-    environment:
-      # Tell boto3 exactly where the AWS config lives regardless of which Linux
-      # user runs inside the container (ftuser home != /root).
-      AWS_CONFIG_FILE: /root/.aws/config
-      AWS_SHARED_CREDENTIALS_FILE: /root/.aws/credentials
+    # AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN are injected
+    # via .env (short-lived STS tokens obtained with `task aws-refresh`).
+    # No ~/.aws volume needed — boto3 picks up credentials from the environment.
     volumes:
       - "./user_data:/freqtrade/user_data"
-      # AWS credentials for BedrockAdvisor — mounted read-only from the host.
-      - "${HOME}/.aws:/root/.aws:ro"
     # FreqUI (Freqtrade web interface) — accessible at http://localhost:8081
     # Bound to loopback only: never reachable from the network.
     ports:
-      - "127.0.0.1:8081:8080"
+      - "127.0.0.1:8081:8081"
     command: >
       trade
       --config /freqtrade/user_data/config.json

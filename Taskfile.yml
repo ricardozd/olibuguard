@@ -86,6 +86,22 @@ tasks:
         uv run freqtrade trade --userdir {{.USERDIR}} --config {{.FT_CONFIG}}
         --strategy {{.STRATEGY}} {{.CLI_ARGS}}
 
+  aws-refresh:
+    desc: Export current AWS session credentials into .env so Docker can use them (run after `aws login`)
+    cmds:
+      - |
+        # After `aws login` the default profile IS already the assumed role.
+        # We just export its current credentials — no extra assume-role needed.
+        CREDS=$(aws configure export-credentials)
+        KEY=$(echo "$CREDS"    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['AccessKeyId'])")
+        SECRET=$(echo "$CREDS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['SecretAccessKey'])")
+        TOKEN=$(echo "$CREDS"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('SessionToken',''))")
+        # Remove any previous STS lines and append fresh ones.
+        sed -i '' '/^AWS_ACCESS_KEY_ID=/d;/^AWS_SECRET_ACCESS_KEY=/d;/^AWS_SESSION_TOKEN=/d' .env
+        printf 'AWS_ACCESS_KEY_ID=%s\nAWS_SECRET_ACCESS_KEY=%s\nAWS_SESSION_TOKEN=%s\n' \
+          "$KEY" "$SECRET" "$TOKEN" >> .env
+        echo "✓ STS credentials written to .env"
+
   docker-up:
     desc: Build and start the bot as a 24/7 Docker daemon (FreqUI at http://localhost:8080)
     cmds:
