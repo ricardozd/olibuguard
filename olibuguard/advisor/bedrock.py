@@ -1,0 +1,130 @@
+"""AWS Bedrock advisor — calls Claude to veto trades with obvious red flags.
+
+Only loaded when ai.enabled = true and ai.provider = "bedrock" in config.yaml.
+If boto3 is not installed or Bedrock is unreachable the advisor returns None
+(fail-safe: the trade proceeds without AI interference).
+
+AWS credentials: AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY in .env, or an IAM
+role attached to the host. boto3 picks them up automatically.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any
+
+from olibuguard.advisor.base import AdvisorOpinion
+from olibuguard.domain.models import MarketContext
+
+_logger = logging.getLogger(__name__)
+
+_SYSTEM = (
+    "You are a conservative risk advisor for a crypto trading bot. "
+    "Your only role is to veto trades with extreme, objective red flags. "
+    "When in doubt do NOT veto — a missed bad trade is better than a false veto "
+    "that blocks a good one. Respond with JSON only, nothing else."
+)
+
+_USER_TEMPLATE = """\
+The strategy signals a BUY (EMA 20 crossed above EMA 50, 1-hour timeframe).
+
+Market context:
+- Symbol: {symbol}
+- Current price: {price} USDT
+- EMA 20 (fast): {ema_fast:.4f}
+- EMA 50 (slow): {ema_slow:.4f}
+- Volume (last candle): {volume:.2f}
+- Portfolio equity: {equity:.2f} USDT
+- Drawdown from peak: {drawdown_pct:.1%}
+
+Veto only for extreme risk: price collapsed > 5% in the last candle, equity is at
+or very near a circuit-breaker limit, or the data looks clearly anomalous.
+
+Respond with JSON only:
+{{"veto": false, "reason": "..."}}
+or
+{{"veto": true, "reason": "..."}}"""
+
+
+class BedrockAdvisor:
+    """Calls AWS Bedrock (Claude) to optionally veto a proposed BUY.
+
+    Satisfies the AIAdvisor Protocol. Any Bedrock or network error returns None
+    (fail-safe — the trade proceeds as if no advisor was present).
+    """
+
+    def __init__(
+        self,
+        model_id: str,
+        region: str = "us-east-1",
+        max_tokens: int = 256,
+        timeout_seconds: float = 10.0,
+    ) -> None:
+        try:
+            import boto3
+
+            self._client: Any = boto3.client("bedrock-runtime", region_name=region)
+        except ImportError as exc:
+            raise ImportError(
+                "boto3 is required for BedrockAdvisor. "
+                "Install it with: uv sync --extra ai"
+            ) from exc
+        self._model_id = model_id
+        self._max_tokens = max_tokens
+        self._timeout = timeout_seconds
+
+    def opinion(self, context: MarketContext) -> AdvisorOpinion | None:
+        """Ask Claude whether to veto this trade.
+
+        Returns ``AdvisorOpinion(bias=-1.0)`` to veto or ``None`` to abstain.
+        Never raises — any error is logged and treated as abstention.
+        """
+        try:
+            return self._call(context)
+        except Exception as exc:
+            _logger.warning("bedrock_advisor.error: %s — abstaining (fail-safe)", exc)
+            return None
+
+    # ── internals ────────────────────────────────────────────────────────────
+
+    def _call(self, context: MarketContext) -> AdvisorOpinion | None:
+        prompt = _USER_TEMPLATE.format(
+            symbol=context.symbol,
+            price=float(context.price),
+            ema_fast=context.indicators.get("ema_fast", 0.0),
+            ema_slow=context.indicators.get("ema_slow", 0.0),
+            volume=context.indicators.get("volume", 0.0),
+            equity=context.indicators.get("equity", 0.0),
+            drawdown_pct=context.indicators.get("drawdown_pct", 0.0),
+        )
+        body = json.dumps(
+            {
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": self._max_tokens,
+                "system": _SYSTEM,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+        )
+        response = self._client.invoke_model(
+            modelId=self._model_id,
+            contentType="application/json",
+            accept="application/json",
+            body=body,
+        )
+        raw: dict[str, Any] = json.loads(response["body"].read())
+        text: str = raw["content"][0]["text"].strip()
+        try:
+            parsed: dict[str, Any] = json.loads(text)
+        except json.JSONDecodeError:
+            _logger.warning(
+                "bedrock_advisor.invalid_json: %r — abstaining", text[:200]
+            )
+            return None
+        veto = bool(parsed.get("veto", False))
+        reason = str(parsed.get("reason", ""))
+        if veto:
+            _logger.info("bedrock_advisor.veto: %s — %s", context.symbol, reason)
+            return AdvisorOpinion(bias=-1.0, rationale=reason)
+        _logger.debug("bedrock_advisor.pass: %s — %s", context.symbol, reason)
+        return None  # abstain — don't interfere with the trade

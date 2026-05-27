@@ -6,7 +6,7 @@ PortfolioState) and wires the risk gate as a second safety net:
 
   - populate_*_trend     -> signals (example EMA20/50 strategy, Phase 1)
   - custom_stake_amount  -> sizing: the risk gate caps the stake (% of capital)
-  - confirm_trade_entry  -> final gate: veto by slippage / limits / circuit breakers
+  - confirm_trade_entry  -> final gate: AI veto → risk gate (slippage / limits / circuit breakers)
 
 Phase 2 safety layers:
   A. Real equity/peak/PnL fed into circuit breakers.
@@ -36,12 +36,13 @@ from pandas import DataFrame
 from freqtrade.persistence import Trade
 from freqtrade.strategy import IStrategy
 
+from olibuguard.advisor.base import AIAdvisor, NullAdvisor, clamp_advisor_factor
 from olibuguard.alerts.sink import AlertSink, NullAlertSink
 from olibuguard.audit.records import DecisionAudit, EquityPoint
 from olibuguard.audit.sink import AuditReader, AuditSink, NullAuditSink
 from olibuguard.audit.version import code_version
 from olibuguard.config import AppConfig, load_config
-from olibuguard.domain.models import OrderIntent, PortfolioState, RiskVerdict, Side
+from olibuguard.domain.models import MarketContext, OrderIntent, PortfolioState, RiskVerdict, Side
 from olibuguard.failsafe import ErrorBudget, run_safe
 from olibuguard.kill_switch import KillSwitch
 from olibuguard.reconciliation import check_equity_drift, restore_peak_equity
@@ -148,6 +149,23 @@ class OlibuguardStrategy(IStrategy):
                 current_equity,
             )
 
+        # AI advisor (Phase 3): load BedrockAdvisor if enabled, else NullAdvisor.
+        advisor: AIAdvisor = NullAdvisor()
+        if config.ai.enabled and config.ai.provider == "bedrock":
+            try:
+                from olibuguard.advisor.bedrock import BedrockAdvisor
+
+                advisor = BedrockAdvisor(
+                    model_id=config.ai.model,
+                    region=config.ai.region,
+                    max_tokens=config.ai.max_tokens,
+                    timeout_seconds=config.ai.timeout_seconds,
+                )
+                logger.info("bedrock_advisor_started: model=%s", config.ai.model)
+            except Exception as exc:
+                logger.warning("bedrock_advisor_unavailable: %s — using NullAdvisor", exc)
+        self._advisor: AIAdvisor = advisor
+
         # Startup alert (G).
         ks_status = "ACTIVE — no new entries" if self._kill_switch.is_active() else "inactive"
         self._alert(
@@ -177,6 +195,13 @@ class OlibuguardStrategy(IStrategy):
             sink = NullAlertSink()
             self._alert_sink = sink
         return sink
+
+    def _ai(self) -> AIAdvisor:
+        advisor = getattr(self, "_advisor", None)
+        if advisor is None:
+            advisor = NullAdvisor()
+            self._advisor = advisor
+        return advisor
 
     def _alert(self, message: str) -> None:
         """Send an alert notification; never raises (fail-safe)."""
@@ -279,6 +304,35 @@ class OlibuguardStrategy(IStrategy):
             realized_pnl_today_quote=self._realized_pnl_today(now),
         )
 
+    def _build_market_context(
+        self,
+        pair: str,
+        price: Decimal,
+        current_time: datetime,
+        analyzed: DataFrame | None,
+        state: PortfolioState,
+    ) -> MarketContext:
+        """Build a MarketContext for the AI advisor from live adapter data."""
+        peak = state.peak_equity_quote
+        drawdown = (
+            float((peak - state.equity_quote) / peak) if peak > 0 else 0.0
+        )
+        indicators: dict[str, float] = {
+            "equity": float(state.equity_quote),
+            "drawdown_pct": drawdown,
+        }
+        if analyzed is not None and not analyzed.empty:
+            row = analyzed.iloc[-1]
+            for col in ("ema_fast", "ema_slow", "volume"):
+                if col in analyzed.columns:
+                    indicators[col] = float(row[col])
+        return MarketContext(
+            symbol=pair,
+            timestamp=current_time.astimezone(UTC),
+            price=price,
+            indicators=indicators,
+        )
+
     def populate_indicators(self, dataframe: DataFrame, metadata: dict[str, Any]) -> DataFrame:
         dataframe["ema_fast"] = dataframe["close"].ewm(span=20, adjust=False).mean()
         dataframe["ema_slow"] = dataframe["close"].ewm(span=50, adjust=False).mean()
@@ -360,6 +414,7 @@ class OlibuguardStrategy(IStrategy):
         **kwargs: Any,
     ) -> bool:
         reference = Decimal(str(rate))
+        analyzed: DataFrame | None = None
         dp = self.dp
         if dp is not None:
             analyzed, _ = dp.get_analyzed_dataframe(pair, self.timeframe)
@@ -377,6 +432,33 @@ class OlibuguardStrategy(IStrategy):
             )
             logger.warning("kill_switch_blocked_entry: pair=%s", pair)
             return False
+        # ── AI advisor veto (Phase 3) ─────────────────────────────────────────
+        # The advisor can only reduce or block — never initiate or enlarge a trade.
+        # Any error (network, boto3, JSON parse) returns None → trade proceeds.
+        state = self._portfolio_state(current_time)
+        ctx = self._build_market_context(pair, reference, current_time, analyzed, state)
+        opinion = run_safe("advisor_opinion", lambda: self._ai().opinion(ctx), None)
+        if opinion is not None:
+            factor = clamp_advisor_factor(opinion.bias)
+            if factor == 0.0:
+                _ai_verdict = RiskVerdict(
+                    approved=False, reason=f"ai_advisor: {opinion.rationale}"
+                )
+                self._audit_decision(
+                    kind="entry",
+                    symbol=pair,
+                    reference_price=reference,
+                    equity=state.equity_quote,
+                    verdict=_ai_verdict,
+                    now=current_time,
+                )
+                logger.warning(
+                    "ai_advisor_veto: pair=%s reason=%s", pair, opinion.rationale
+                )
+                self._alert(
+                    f"OLIBUGUARD: AI ADVISOR VETO\npair: {pair}\nreason: {opinion.rationale}"
+                )
+                return False
         intent = OrderIntent(
             symbol=pair,
             side=Side.BUY,
@@ -384,7 +466,6 @@ class OlibuguardStrategy(IStrategy):
             reference_price=reference,
             execution_price=Decimal(str(rate)),
         )
-        state = self._portfolio_state(current_time)
         verdict = self._gate().evaluate(intent, state)
         self._audit_decision(
             kind="entry",

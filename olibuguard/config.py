@@ -39,9 +39,11 @@ class AIConfig(BaseModel):
 
     enabled: bool = False
     provider: Literal["null", "bedrock"] = "null"
-    model: str = ""
+    model: str = "anthropic.claude-3-haiku-20240307-v1:0"
     weight: float = Field(default=0.0, ge=0.0, le=1.0)
-    region: str = "eu-west-1"
+    region: str = "us-east-1"
+    max_tokens: int = Field(default=256, gt=0)
+    timeout_seconds: float = Field(default=10.0, gt=0)
 
 
 class ExchangeConfig(BaseModel):
