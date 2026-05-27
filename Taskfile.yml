@@ -70,7 +70,7 @@ tasks:
     cmds:
       - >-
         uv run freqtrade download-data --userdir {{.USERDIR}} --config {{.FT_CONFIG}}
-        --pairs BTC/USDT ETH/USDT --timeframes 1h {{.CLI_ARGS}}
+        --pairs BTC/USDT ETH/USDT --timeframes 5m 1h {{.CLI_ARGS}}
 
   backtest:
     desc: 'Backtest, e.g. `task backtest -- --timerange 20250101-20250401`'

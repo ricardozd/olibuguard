@@ -33,8 +33,9 @@ from typing import Any
 
 from pandas import DataFrame
 
+from freqtrade.enums import RunMode
 from freqtrade.persistence import Trade
-from freqtrade.strategy import IStrategy, stoploss_from_absolute
+from freqtrade.strategy import IStrategy, merge_informative_pair, stoploss_from_absolute
 
 from olibuguard.advisor.base import AIAdvisor, NullAdvisor, clamp_advisor_factor
 from olibuguard.alerts.sink import AlertSink, NullAlertSink
@@ -58,9 +59,10 @@ class OlibuguardStrategy(IStrategy):
     can_short = False
     stoploss = -0.10          # hard floor: Freqtrade enforces this even if ATR says wider
     use_custom_stoploss = True
-    minimal_roi = {"0": 0.10}
+    minimal_roi = {"0": 0.015}  # 1.5% — realistic for 5m; 10% caused almost all exits via stoploss
     process_only_new_candles = True
-    startup_candle_count = 50  # EMA50 needs 50 candles = ~12 h of 15m data
+    # 200 candles per timeframe: covers EMA50 on 5m (16 h) and EMA200 on 1h (200 h).
+    startup_candle_count = 200
 
     # ATR stoploss multiplier: stop = entry - ATR(14) × multiplier.
     # 2.0 gives room for normal noise; tighten to 1.5 in ranging markets.
@@ -86,6 +88,11 @@ class OlibuguardStrategy(IStrategy):
                 "only_per_pair": False,
             },
         ]
+
+    def informative_pairs(self) -> list[tuple[str, str]]:
+        """Declare 1h data for every whitelisted pair (needed for EMA 200 trend filter)."""
+        pairs = self.dp.current_whitelist() if self.dp else []
+        return [(pair, "1h") for pair in pairs]
 
     def bot_start(self, **kwargs: Any) -> None:
         cfg_path = os.environ.get("OLIBUGUARD_CONFIG")
@@ -212,8 +219,23 @@ class OlibuguardStrategy(IStrategy):
             self._advisor = advisor
         return advisor
 
+    @property
+    def _is_live(self) -> bool:
+        """True only in live/paper/dry-run modes — never in backtest or hyperopt."""
+        return self.config.get("runmode", RunMode.OTHER) in (
+            RunMode.LIVE,
+            RunMode.DRY_RUN,
+            RunMode.PAPER,
+        )
+
     def _alert(self, message: str) -> None:
-        """Send an alert notification; never raises (fail-safe)."""
+        """Send an alert notification; never raises (fail-safe).
+
+        Silenced in backtesting and hyperopt to avoid flooding Telegram
+        with every strategy evaluation run.
+        """
+        if not self._is_live:
+            return
         run_safe("alert_send", lambda: self._alerts().send(message), None)
 
     def _ks(self) -> KillSwitch:
@@ -398,12 +420,41 @@ class OlibuguardStrategy(IStrategy):
         )
         dataframe["atr"] = tr.ewm(com=13, adjust=False).mean()
 
+        # 1h trend filter: EMA 200 on 1-hour candles.
+        # Merges the closest 1h candle into each 5m row (forward-fill).
+        # Falls back gracefully: if 1h data is unavailable the column stays NaN
+        # and populate_entry_trend treats it as "filter disabled" (fail-safe).
+        if self.dp is not None:
+            inf_1h = self.dp.get_pair_dataframe(pair=metadata["pair"], timeframe="1h")
+            if not inf_1h.empty:
+                inf_1h = inf_1h.copy()
+                inf_1h["ema200"] = inf_1h["close"].ewm(span=200, adjust=False).mean()
+                dataframe = merge_informative_pair(
+                    dataframe, inf_1h, self.timeframe, "1h", ffill=True
+                )
+
         return dataframe
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict[str, Any]) -> DataFrame:
         fast, slow = dataframe["ema_fast"], dataframe["ema_slow"]
         crossed_up = (fast > slow) & (fast.shift(1) <= slow.shift(1))
-        dataframe.loc[crossed_up & (dataframe["volume"] > 0), "enter_long"] = 1
+
+        # RSI filter: skip overbought entries — high RSI entries tend to reverse quickly.
+        rsi_ok = dataframe["rsi"] <= 65
+
+        # Macro trend filter: only buy when price is above the 1h EMA 200.
+        # Trades against the macro trend have a much lower win rate.
+        # Falls back to True (filter disabled) when 1h data is NaN or missing — fail-safe.
+        if "ema200_1h" in dataframe.columns:
+            ema_available = dataframe["ema200_1h"].notna()
+            trend_up = (dataframe["close"] > dataframe["ema200_1h"]) | ~ema_available
+        else:
+            trend_up = dataframe["close"] > 0  # always True — fail-safe
+
+        dataframe.loc[
+            crossed_up & (dataframe["volume"] > 0) & rsi_ok & trend_up,
+            "enter_long",
+        ] = 1
         return dataframe
 
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict[str, Any]) -> DataFrame:
