@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 class OlibuguardStrategy(IStrategy):
     INTERFACE_VERSION = 3
 
-    timeframe = "15m"
+    timeframe = "5m"
     can_short = False
     stoploss = -0.10          # hard floor: Freqtrade enforces this even if ATR says wider
     use_custom_stoploss = True
