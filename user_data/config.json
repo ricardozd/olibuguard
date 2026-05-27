@@ -32,11 +32,18 @@
     },
     "exchange": {
         "name": "binance",
+        "sandbox": true,
         "key": "",
         "secret": "",
         "ccxt_config": {
             "options": {
                 "adjustForTimeDifference": true
+            },
+            "urls": {
+                "api": {
+                    "public":  "https://testnet.binance.vision/api",
+                    "private": "https://testnet.binance.vision/api"
+                }
             }
         },
         "ccxt_async_config": {},

@@ -175,9 +175,10 @@ task docker-down    # graceful stop
 This is the **Phase 2 exit criterion**: ≥ 4 weeks of dry-run against live Binance market data
 without crashes, erratic orders, or unexplained P&L divergence.
 
-### 1. Get a Binance API key
-Create a **read-only** key (spot trading enabled, withdrawal **disabled**, IP whitelist recommended).
-Even for dry-run, Freqtrade needs credentials to stream live OHLCV data.
+### 1. Get a Binance Spot Testnet API key
+Go to **https://testnet.binance.vision/** (GitHub login) and generate a key pair.
+Testnet keys are free, isolated from real funds, and hard-wired in `config.json` (`sandbox: true`
++ explicit testnet URLs so ccxt always routes to `testnet.binance.vision`).
 
 ### 2. Configure `.env`
 ```bash
