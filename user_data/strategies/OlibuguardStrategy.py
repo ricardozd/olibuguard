@@ -8,11 +8,12 @@ PortfolioState) and wires the risk gate as a second safety net:
   - custom_stake_amount  -> sizing: the risk gate caps the stake (% of capital)
   - confirm_trade_entry  -> final gate: veto by slippage / limits / circuit breakers
 
-Portfolio state fed to the gate (Phase 2, increment A): real equity from wallets,
-in-memory peak equity (persisted with the audit DB in increment B), and today's
-realized PnL from closed trades. Reads are defensive: on failure we log and fall
-back to neutral values, never blocking trading on a read error (fail-safe).
-All Freqtrade-specific access is confined to this adapter.
+Portfolio state fed to the gate (Phase 2, increments A–C): real equity from wallets,
+peak equity tracked in-memory and persisted to the audit DB, today's realized PnL
+from closed trades, and a periodic equity-curve snapshot via bot_loop_start.
+Reads are defensive: on failure we log and fall back to neutral values, never
+blocking trading on a read error (fail-safe). Audit failures also never block
+trading (fail-safe). All Freqtrade-specific access is confined to this adapter.
 """
 
 from __future__ import annotations
@@ -29,9 +30,12 @@ from pandas import DataFrame
 from freqtrade.persistence import Trade
 from freqtrade.strategy import IStrategy
 
+from olibuguard.audit.records import DecisionAudit, EquityPoint
+from olibuguard.audit.sink import AuditSink, NullAuditSink
+from olibuguard.audit.version import code_version
 from olibuguard.config import AppConfig, load_config
 from olibuguard.domain.models import OrderIntent, PortfolioState, Side
-from olibuguard.risk.gate import RiskGate
+from olibuguard.risk.gate import RiskGate, RiskVerdict
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +75,20 @@ class OlibuguardStrategy(IStrategy):
         cfg_path = os.environ.get("OLIBUGUARD_CONFIG")
         config = load_config(Path(cfg_path)) if cfg_path else AppConfig()
         self._risk = RiskGate(config.risk)
-        self._peak_equity = Decimal("0")  # in-memory; persisted in increment B
+        self._peak_equity = Decimal("0")
+        self._code_version = code_version()
+
+        # Audit sink: try the SQLite backend, fall back to no-op (fail-safe).
+        audit: AuditSink = NullAuditSink()
+        try:
+            from olibuguard.audit.sqlite import SQLiteAuditSink
+
+            user_data_dir = Path(self.config.get("user_data_dir", "."))
+            audit = SQLiteAuditSink(user_data_dir / "olibuguard_audit.sqlite")
+            logger.info("audit_sink_started: path=%s", user_data_dir / "olibuguard_audit.sqlite")
+        except Exception as exc:
+            logger.warning("audit_sink_unavailable: %s — using NullAuditSink", exc)
+        self._audit: AuditSink = audit
 
     def _gate(self) -> RiskGate:
         gate = getattr(self, "_risk", None)
@@ -79,6 +96,52 @@ class OlibuguardStrategy(IStrategy):
             gate = RiskGate(AppConfig().risk)
             self._risk = gate
         return gate
+
+    def _sink(self) -> AuditSink:
+        sink = getattr(self, "_audit", None)
+        if sink is None:
+            sink = NullAuditSink()
+            self._audit = sink
+        return sink
+
+    def _audit_decision(
+        self,
+        kind: str,
+        symbol: str,
+        reference_price: Decimal,
+        equity: Decimal,
+        verdict: RiskVerdict,
+        now: datetime,
+    ) -> None:
+        """Persist a risk-gate decision; never raises (fail-safe)."""
+        try:
+            self._sink().record_decision(
+                DecisionAudit(
+                    at=now.astimezone(UTC),
+                    symbol=symbol,
+                    kind=kind,
+                    reference_price=reference_price,
+                    equity_quote=equity,
+                    approved=verdict.approved,
+                    reason=verdict.reason,
+                    quote_amount=(
+                        verdict.intent.quote_amount if verdict.intent is not None else None
+                    ),
+                    code_version=getattr(self, "_code_version", "unknown"),
+                )
+            )
+        except Exception as exc:  # audit must never block trading
+            logger.warning("audit_decision_failed: %s", exc)
+
+    def bot_loop_start(self, current_time: datetime, **kwargs: Any) -> None:
+        """Record an equity snapshot for the equity curve (increment C)."""
+        try:
+            equity = self._read_equity()
+            self._sink().record_equity(
+                EquityPoint(at=current_time.astimezone(UTC), equity_quote=equity)
+            )
+        except Exception as exc:  # audit must never block trading
+            logger.warning("audit_equity_failed: %s", exc)
 
     def _read_equity(self) -> Decimal:
         wallets = self.wallets
@@ -149,7 +212,16 @@ class OlibuguardStrategy(IStrategy):
             quote_amount=Decimal(str(proposed_stake)),
             reference_price=Decimal(str(current_rate)),
         )
-        verdict = self._gate().evaluate(intent, self._portfolio_state(current_time))
+        state = self._portfolio_state(current_time)
+        verdict = self._gate().evaluate(intent, state)
+        self._audit_decision(
+            kind="stake",
+            symbol=pair,
+            reference_price=Decimal(str(current_rate)),
+            equity=state.equity_quote,
+            verdict=verdict,
+            now=current_time,
+        )
         if not verdict.approved or verdict.intent is None:
             return 0.0
         approved = float(verdict.intent.quote_amount)
@@ -182,4 +254,14 @@ class OlibuguardStrategy(IStrategy):
             reference_price=reference,
             execution_price=Decimal(str(rate)),
         )
-        return self._gate().evaluate(intent, self._portfolio_state(current_time)).approved
+        state = self._portfolio_state(current_time)
+        verdict = self._gate().evaluate(intent, state)
+        self._audit_decision(
+            kind="entry",
+            symbol=pair,
+            reference_price=reference,
+            equity=state.equity_quote,
+            verdict=verdict,
+            now=current_time,
+        )
+        return verdict.approved
