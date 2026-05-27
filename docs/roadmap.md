@@ -148,7 +148,8 @@ false signals and loses money. This directly limits monthly return.
 
 | Month | Account | P&L $ | P&L % | Max drawdown | Notes |
 |-------|---------|--------|--------|--------------|-------|
-| 2026-06 | $100 paper | — | — | — | live validation in progress |
+| Backtest 7m | $100 sim | +$0.91 | +0.91% | 3.53% | Oct 2024–Apr 2025; ETH+SOL+BNB; **first positive result** |
+| 2026-06 | $100 paper | — | — | — | Phase 4 live validation starting |
 
 ---
 
@@ -160,3 +161,7 @@ false signals and loses money. This directly limits monthly return.
 | 2026-05 | Timeframe 1h → 5m | More signal frequency for compounding |
 | 2026-05 | AI Advisor (Claude Opus 4 + extended thinking) | Veto-only safety layer |
 | 2026-05 | Dual paper/live mode via `FREQTRADE__DRY_RUN` | Same image, two modes |
+| 2026-05 | EMA 20/50 → Golden Cross EMA 50/200 on 15m | Fewer but higher-quality signals; win rate ↑ from ~15% to 32-39% |
+| 2026-05 | Drop BTC/USDT, trade ETH/SOL/BNB | Altcoins trend more sharply → better Golden Cross quality; BTC was -1.42% drag |
+| 2026-05 | Break-even stop @+2% profit | Prevents +3% winners from reverting to -2% losses; tipped backtest positive |
+| 2026-05 | ROI target 7% (from sweep 5%/7%/10%) | Local optimum; best trade hits 7% in backtest confirming target is reachable |
