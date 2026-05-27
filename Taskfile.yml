@@ -9,6 +9,9 @@ vars:
   USERDIR: user_data
   FT_CONFIG: user_data/config.json
   STRATEGY: OlibuguardStrategy
+  FT_USER: olibuguard   # API username (matches config.json api_server.username)
+  FT_PASS:
+    sh: grep FREQTRADE__API_SERVER__PASSWORD .env | cut -d= -f2
 
 tasks:
   default:
@@ -104,15 +107,23 @@ tasks:
           "$KEY" "$SECRET" "$TOKEN" >> .env
         echo "✓ STS credentials written to .env"
 
-  docker-up:
-    desc: Build and start in LIVE mode (real orders on Binance)
-    cmds:
-      - FREQTRADE__DRY_RUN=false docker compose up --build -d
-
   paper-up:
     desc: Build and start in PAPER mode (dry-run, no real orders)
     cmds:
       - FREQTRADE__DRY_RUN=true docker compose up --build -d
+      # Freqtrade starts in STOPPED state after a rebuild — wait and kick it to RUNNING.
+      - sleep 8 && curl -sf -X POST -u "{{.FT_USER}}:{{.FT_PASS}}" http://localhost:8081/api/v1/start || true
+
+  docker-up:
+    desc: Build and start in LIVE mode (real orders on Binance)
+    cmds:
+      - FREQTRADE__DRY_RUN=false docker compose up --build -d
+      - sleep 8 && curl -sf -X POST -u "{{.FT_USER}}:{{.FT_PASS}}" http://localhost:8081/api/v1/start || true
+
+  bot-start:
+    desc: Kick bot from STOPPED → RUNNING (if it started in STOPPED state)
+    cmds:
+      - curl -sf -X POST -u "{{.FT_USER}}:{{.FT_PASS}}" http://localhost:8081/api/v1/start
 
   docker-down:
     desc: Stop the Docker daemon gracefully
