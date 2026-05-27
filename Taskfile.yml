@@ -2,6 +2,9 @@
 # dependency manager (keeps uv.lock and reproducibility). Run `task` to list tasks.
 version: "3"
 
+dotenv:
+  - .env   # loads FREQTRADE__* and OLIBUGUARD_CONFIG into every task
+
 vars:
   USERDIR: user_data
   FT_CONFIG: user_data/config.json
