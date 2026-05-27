@@ -86,6 +86,7 @@ class OlibuguardStrategy(IStrategy):
         cfg_path = os.environ.get("OLIBUGUARD_CONFIG")
         config = load_config(Path(cfg_path)) if cfg_path else AppConfig()
         self._risk = RiskGate(config.risk)
+        self._risk_limits = config.risk   # kept for AI advisor context
         self._peak_equity = Decimal("0")
         self._code_version = code_version()
 
@@ -326,18 +327,39 @@ class OlibuguardStrategy(IStrategy):
     ) -> MarketContext:
         """Build a MarketContext for the AI advisor from live adapter data."""
         peak = state.peak_equity_quote
-        drawdown = (
-            float((peak - state.equity_quote) / peak) if peak > 0 else 0.0
-        )
+        drawdown = float((peak - state.equity_quote) / peak) if peak > 0 else 0.0
+
+        # Risk-gate thresholds so the advisor knows how close we are to the limits.
+        rl = getattr(self, "_risk_limits", None)
+
         indicators: dict[str, float] = {
+            # Equity / drawdown
             "equity": float(state.equity_quote),
             "drawdown_pct": drawdown,
+            # Portfolio composition
+            "open_positions": float(state.open_positions),
+            "open_exposure": float(state.open_exposure_quote),
+            "realized_pnl_today": float(state.realized_pnl_today_quote),
+            # Circuit-breaker limits (provide reference for proximity assessment)
+            "daily_loss_limit_pct": float(rl.daily_loss_limit_pct) if rl else 0.05,
+            "max_drawdown_pct": float(rl.max_drawdown_pct) if rl else 0.10,
+            "max_open_positions": float(rl.max_open_positions) if rl else 3.0,
         }
+
         if analyzed is not None and not analyzed.empty:
             row = analyzed.iloc[-1]
-            for col in ("ema_fast", "ema_slow", "volume"):
+            # Last-candle OHLCV + computed indicators
+            for col in (
+                "ema_fast", "ema_slow", "volume", "rsi", "volume_ratio",
+                "open", "high", "low",
+            ):
                 if col in analyzed.columns:
                     indicators[col] = float(row[col])
+            # Last 5 closes, newest first (close_0 = current close = price).
+            tail = analyzed["close"].iloc[-5:].tolist()
+            for i, c in enumerate(reversed(tail)):
+                indicators[f"close_{i}"] = float(c)
+
         return MarketContext(
             symbol=pair,
             timestamp=current_time.astimezone(UTC),
@@ -348,6 +370,19 @@ class OlibuguardStrategy(IStrategy):
     def populate_indicators(self, dataframe: DataFrame, metadata: dict[str, Any]) -> DataFrame:
         dataframe["ema_fast"] = dataframe["close"].ewm(span=20, adjust=False).mean()
         dataframe["ema_slow"] = dataframe["close"].ewm(span=50, adjust=False).mean()
+
+        # RSI 14 — Wilder's EWM method (pandas-native, no TA-Lib dependency).
+        # clip(0,100) handles inf when there are no losses; fillna(50) handles startup NaN.
+        delta = dataframe["close"].diff()
+        gain = delta.clip(lower=0).ewm(com=13, adjust=False).mean()
+        loss = (-delta).clip(lower=0).ewm(com=13, adjust=False).mean()
+        dataframe["rsi"] = (100.0 - (100.0 / (1.0 + gain / loss))).clip(0.0, 100.0).fillna(50.0)
+
+        # Volume ratio: current vs 20-candle rolling average.
+        # where(>0) avoids division by zero; fillna(1.0) = "normal" when average unknown.
+        vol_avg = dataframe["volume"].rolling(20, min_periods=1).mean()
+        dataframe["volume_ratio"] = (dataframe["volume"] / vol_avg.where(vol_avg > 0)).fillna(1.0)
+
         return dataframe
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict[str, Any]) -> DataFrame:

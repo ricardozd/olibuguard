@@ -40,22 +40,32 @@ _SYSTEM = (
 _USER_TEMPLATE = """\
 The strategy signals a BUY (EMA 20 crossed above EMA 50, 1-hour timeframe).
 
-Market context:
-- Symbol: {symbol}
-- Current price: {price} USDT
-- EMA 20 (fast): {ema_fast:.4f}
-- EMA 50 (slow): {ema_slow:.4f}
-- Volume (last candle): {volume:.2f}
-- Portfolio equity: {equity:.2f} USDT
-- Drawdown from peak: {drawdown_pct:.1%}
+=== Signal quality ===
+- Symbol:           {symbol}
+- Entry price:      {price:.2f} USDT
+- EMA 20 (fast):    {ema_fast:.2f}   EMA 50 (slow): {ema_slow:.2f}
+- EMA separation:   {ema_sep_pct:+.2f}%  ({ema_sep_desc})
+- Entry candle:     {candle_dir}  (open {open_p:.2f} → close {price:.2f}, {chg:+.2f}%)
+- Volume ratio:     {vol_ratio:.1f}x 20-candle average
+- RSI 14:           {rsi:.1f}  ({rsi_desc})
 
-Veto only for extreme risk: price collapsed > 5% in the last candle, equity is at
-or very near a circuit-breaker limit, or the data looks clearly anomalous.
+=== Recent closes (newest first, 1h candles) ===
+  {recent_closes}
 
-Respond with JSON only:
-{{"veto": false, "reason": "..."}}
-or
-{{"veto": true, "reason": "..."}}"""
+=== Portfolio state ===
+- Equity:           {equity:.2f} USDT
+- Open positions:   {open_positions} of {max_positions} max
+- Open exposure:    {open_exposure:.2f} USDT
+- Drawdown:         {drawdown_pct:.1%}  (circuit breaker: {max_drawdown_pct:.0%})
+- Daily P&L:        {pnl:+.2f} USDT  ({dl_frac:.1%} of {dl_lim:.0%} daily limit)
+
+Veto only for extreme, objective red flags such as:
+- RSI > 80 with weak volume (ratio < 0.5)
+- Entry candle strongly bearish (close well below open, > 3% drop)
+- Drawdown or daily loss already consuming > 70% of their circuit-breaker limit
+- Price data clearly anomalous
+When in doubt do NOT veto — false vetoes are more costly than missed bad trades.\
+"""
 
 
 class BedrockAdvisor:
@@ -110,16 +120,70 @@ class BedrockAdvisor:
 
     # ── internals ────────────────────────────────────────────────────────────
 
-    def _call(self, context: MarketContext) -> AdvisorOpinion | None:
-        prompt = _USER_TEMPLATE.format(
-            symbol=context.symbol,
-            price=float(context.price),
-            ema_fast=context.indicators.get("ema_fast", 0.0),
-            ema_slow=context.indicators.get("ema_slow", 0.0),
-            volume=context.indicators.get("volume", 0.0),
-            equity=context.indicators.get("equity", 0.0),
-            drawdown_pct=context.indicators.get("drawdown_pct", 0.0),
+    def _format_prompt(self, context: MarketContext) -> str:
+        """Render the user prompt with all available market and portfolio context."""
+        g = context.indicators.get
+        price = float(context.price)
+
+        ema_fast = g("ema_fast", price)
+        ema_slow = g("ema_slow", price)
+        open_price = g("open", price)
+        equity = g("equity", 0.0)
+
+        # EMA separation as % of price — indicates crossover strength.
+        ema_sep_pct = (ema_fast - ema_slow) / price * 100.0 if price > 0 else 0.0
+        if abs(ema_sep_pct) < 0.1:
+            ema_sep_desc = "marginal — high false-signal risk"
+        elif abs(ema_sep_pct) < 0.5:
+            ema_sep_desc = "moderate"
+        else:
+            ema_sep_desc = "strong"
+
+        # Last-candle direction.
+        candle_chg_pct = (price - open_price) / open_price * 100.0 if open_price > 0 else 0.0
+        candle_dir = "bullish" if candle_chg_pct >= 0 else "bearish"
+
+        # RSI interpretation.
+        rsi = g("rsi", 50.0)
+        rsi_desc = "overbought" if rsi > 75 else ("oversold" if rsi < 25 else "neutral")
+
+        # Last 5 closes, newest first (close_0 = entry candle close = price).
+        closes = [g(f"close_{i}", price) for i in range(5)]
+        recent_closes = ",  ".join(f"{c:.2f}" for c in closes)
+
+        # Daily loss as fraction of the limit already consumed.
+        realized_pnl = g("realized_pnl_today", 0.0)
+        daily_loss_fraction = (
+            -realized_pnl / equity if equity > 0 and realized_pnl < 0 else 0.0
         )
+
+        return _USER_TEMPLATE.format(
+            symbol=context.symbol,
+            price=price,
+            ema_fast=ema_fast,
+            ema_slow=ema_slow,
+            ema_sep_pct=ema_sep_pct,
+            ema_sep_desc=ema_sep_desc,
+            open_p=open_price,          # short key to stay under line-length limit
+            candle_dir=candle_dir,
+            chg=candle_chg_pct,         # short key
+            vol_ratio=g("volume_ratio", 1.0),
+            rsi=rsi,
+            rsi_desc=rsi_desc,
+            recent_closes=recent_closes,
+            equity=equity,
+            open_positions=int(g("open_positions", 0.0)),
+            max_positions=int(g("max_open_positions", 3.0)),
+            open_exposure=g("open_exposure", 0.0),
+            drawdown_pct=g("drawdown_pct", 0.0),
+            max_drawdown_pct=g("max_drawdown_pct", 0.10),
+            pnl=realized_pnl,           # short key
+            dl_frac=daily_loss_fraction,  # short key
+            dl_lim=g("daily_loss_limit_pct", 0.05),  # short key
+        )
+
+    def _call(self, context: MarketContext) -> AdvisorOpinion | None:
+        prompt = self._format_prompt(context)
         body_dict: dict[str, Any] = {
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": self._max_tokens,

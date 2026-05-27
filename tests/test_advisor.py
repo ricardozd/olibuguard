@@ -30,11 +30,32 @@ def _ctx() -> MarketContext:
         timestamp=datetime.now(UTC),
         price=Decimal("50000"),
         indicators={
+            # Signal quality
             "ema_fast": 50100.0,
             "ema_slow": 49900.0,
+            "rsi": 58.0,
             "volume": 1000.0,
+            "volume_ratio": 1.5,
+            # Last candle OHLC (close = price = 50000)
+            "open": 49800.0,
+            "high": 50200.0,
+            "low": 49750.0,
+            # Last 5 closes, newest first
+            "close_0": 50000.0,
+            "close_1": 49950.0,
+            "close_2": 49600.0,
+            "close_3": 49400.0,
+            "close_4": 49800.0,
+            # Portfolio state
             "equity": 990.0,
             "drawdown_pct": 0.01,
+            "open_positions": 1.0,
+            "open_exposure": 45.0,
+            "realized_pnl_today": -9.5,
+            # Risk-gate limits
+            "daily_loss_limit_pct": 0.05,
+            "max_drawdown_pct": 0.10,
+            "max_open_positions": 3.0,
         },
     )
 
@@ -247,6 +268,60 @@ def test_bedrock_advisor_missing_boto3_raises() -> None:
         sys.modules.pop("olibuguard.advisor.bedrock", None)
         if saved is not None:
             sys.modules["boto3"] = saved
+
+
+# ── Prompt content ───────────────────────────────────────────────────────────
+
+
+def test_bedrock_prompt_contains_all_sections(fake_boto3: Any) -> None:
+    """The rendered prompt sent to Bedrock includes every context section."""
+    fake_boto3.client.return_value = _mock_client(_bedrock_response(veto=False))
+    from olibuguard.advisor.bedrock import BedrockAdvisor
+
+    BedrockAdvisor(model_id="m").opinion(_ctx())
+
+    body: dict[str, Any] = json.loads(
+        fake_boto3.client.return_value.invoke_model.call_args.kwargs["body"]
+    )
+    prompt: str = body["messages"][0]["content"]
+    for section in ("Signal quality", "Recent closes", "Portfolio state",
+                    "EMA separation", "RSI", "Volume ratio",
+                    "Drawdown", "Daily P&L"):
+        assert section in prompt, f"missing section: {section!r}"
+
+
+def test_bedrock_prompt_ema_separation_computed(fake_boto3: Any) -> None:
+    """EMA separation % is computed and injected into the prompt."""
+    fake_boto3.client.return_value = _mock_client(_bedrock_response(veto=False))
+    from olibuguard.advisor.bedrock import BedrockAdvisor
+
+    BedrockAdvisor(model_id="m").opinion(_ctx())
+    body: dict[str, Any] = json.loads(
+        fake_boto3.client.return_value.invoke_model.call_args.kwargs["body"]
+    )
+    prompt: str = body["messages"][0]["content"]
+    # ema_fast=50100, ema_slow=49900, price=50000 → sep = 0.40% (moderate)
+    assert "moderate" in prompt
+    assert "+0.40%" in prompt
+
+
+def test_bedrock_prompt_rsi_descriptor(fake_boto3: Any) -> None:
+    """RSI descriptor maps: >75 overbought, <25 oversold, else neutral."""
+    from olibuguard.advisor.bedrock import BedrockAdvisor
+
+    for rsi_val, expected in [(80.0, "overbought"), (20.0, "oversold"), (50.0, "neutral")]:
+        ctx = MarketContext(
+            symbol="BTC/USDT",
+            timestamp=datetime.now(UTC),
+            price=Decimal("50000"),
+            indicators={**_ctx().indicators, "rsi": rsi_val},
+        )
+        fake_boto3.client.return_value = _mock_client(_bedrock_response(veto=False))
+        BedrockAdvisor(model_id="m").opinion(ctx)
+        body: dict[str, Any] = json.loads(
+            fake_boto3.client.return_value.invoke_model.call_args.kwargs["body"]
+        )
+        assert expected in body["messages"][0]["content"]
 
 
 # ── Extended thinking ─────────────────────────────────────────────────────────
