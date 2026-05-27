@@ -32,6 +32,8 @@ ai:
   provider: "null"    # "null" | "bedrock"  (quotes! unquoted null is None in YAML)
   model: anthropic.claude-3-haiku-20240307-v1:0
   weight: 0.0         # weight the strategy gives the advisor (0 = ignores it)
-  region: us-east-1
+  region: eu-west-1
+  # profile: a9e      # named AWS profile from ~/.aws/config (role-based auth).
+  #                   # Unset → boto3 default chain (instance role, env vars, …).
   max_tokens: 256
   timeout_seconds: 10.0   # fail-safe: if Bedrock times out, the trade proceeds

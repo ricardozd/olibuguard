@@ -4,8 +4,13 @@ Only loaded when ai.enabled = true and ai.provider = "bedrock" in config.yaml.
 If boto3 is not installed or Bedrock is unreachable the advisor returns None
 (fail-safe: the trade proceeds without AI interference).
 
-AWS credentials: AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY in .env, or an IAM
-role attached to the host. boto3 picks them up automatically.
+AWS credentials — choose one:
+  • Named profile (role-based, recommended for local dev):
+      ai.profile: a9e  in config.yaml  → assumes the role via ~/.aws/config
+  • Default credential chain (EC2 instance role, ECS task role, env vars):
+      leave ai.profile unset; boto3 picks up credentials automatically.
+  • Static keys (not recommended, last resort):
+      AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in .env
 """
 
 from __future__ import annotations
@@ -58,13 +63,20 @@ class BedrockAdvisor:
         self,
         model_id: str,
         region: str = "us-east-1",
+        profile: str | None = None,
         max_tokens: int = 256,
         timeout_seconds: float = 10.0,
     ) -> None:
         try:
             import boto3
 
-            self._client: Any = boto3.client("bedrock-runtime", region_name=region)
+            if profile:
+                # Role-based auth: assume the role declared in ~/.aws/config.
+                session = boto3.Session(profile_name=profile)
+                self._client: Any = session.client("bedrock-runtime", region_name=region)
+            else:
+                # Default credential chain (instance role, env vars, …).
+                self._client = boto3.client("bedrock-runtime", region_name=region)
         except ImportError as exc:
             raise ImportError(
                 "boto3 is required for BedrockAdvisor. "

@@ -158,6 +158,7 @@ class OlibuguardStrategy(IStrategy):
                 advisor = BedrockAdvisor(
                     model_id=config.ai.model,
                     region=config.ai.region,
+                    profile=config.ai.profile,
                     max_tokens=config.ai.max_tokens,
                     timeout_seconds=config.ai.timeout_seconds,
                 )

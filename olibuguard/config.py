@@ -42,6 +42,9 @@ class AIConfig(BaseModel):
     model: str = "anthropic.claude-3-haiku-20240307-v1:0"
     weight: float = Field(default=0.0, ge=0.0, le=1.0)
     region: str = "us-east-1"
+    # Named AWS profile from ~/.aws/config (role-based auth, no static keys).
+    # Leave None to let boto3 use the default credential chain.
+    profile: str | None = None
     max_tokens: int = Field(default=256, gt=0)
     timeout_seconds: float = Field(default=10.0, gt=0)
 
