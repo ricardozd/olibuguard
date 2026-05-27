@@ -10,7 +10,7 @@ WORKDIR /tmp/build
 COPY pyproject.toml ./
 COPY README.md ./README.md
 COPY olibuguard ./olibuguard
-RUN pip install --no-cache-dir . && rm -rf /tmp/build
+RUN pip install --no-cache-dir ".[ai]" && rm -rf /tmp/build
 
 WORKDIR /freqtrade
 USER ftuser
