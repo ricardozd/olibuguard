@@ -1,143 +1,144 @@
-# Olibuguard — Visión general
+# Olibuguard — Overview
 
-## Qué es
+## What it is
 
-Bot de trading automático de criptomonedas sobre Binance.
-Construido como proyecto de aprendizaje sobre **Freqtrade** + arquitectura hexagonal en Python.
+Automated cryptocurrency trading bot on Binance.
+Built as a personal learning project on top of **Freqtrade** with hexagonal architecture in Python.
 
-Opera 24/7 en Docker. Soporta dos modos:
-- **Paper mode** (`task paper-up`): dry-run, sin órdenes reales, ideal para validar en vivo.
-- **Live mode** (`task docker-up`): órdenes reales en Binance con capital mínimo.
+Runs 24/7 in Docker. Supports two modes:
+- **Paper mode** (`task paper-up`): dry-run, no real orders — ideal for live market validation.
+- **Live mode** (`task docker-up`): real orders on Binance with minimal capital.
 
 ---
 
-## Pares y timeframe
+## Pairs and timeframe
 
-| Parámetro | Valor |
-|---|---|
-| Pares | BTC/USDT, ETH/USDT |
-| Timeframe | 5 m (velas de 5 minutos) |
+| Parameter | Value |
+|-----------|-------|
+| Pairs | BTC/USDT, ETH/USDT |
+| Timeframe | 5m (5-minute candles) |
 | Exchange | Binance |
-| Moneda base | USDT |
+| Quote currency | USDT |
 
 ---
 
-## Señal de entrada
+## Entry signal
 
-La estrategia usa un **cruce de EMAs** en la vela de 5 m:
+The strategy uses an **EMA crossover** on the 5m candle:
 
-1. **EMA 20** (rápida) cruza **por encima** de **EMA 50** (lenta) → señal de compra.
-2. La estrategia también calcula:
-   - **RSI 14** (Wilder EWM, sin TA-Lib) — para contexto del advisor.
-   - **Volume ratio** — volumen actual / media 20 velas — para contexto del advisor.
-   - **ATR 14** (Wilder EWM, sin TA-Lib) — para calcular el stoploss dinámico.
+1. **EMA 20** (fast) crosses **above** **EMA 50** (slow) → buy signal.
+2. The strategy also computes:
+   - **RSI 14** (Wilder EWM, no TA-Lib) — context for the AI advisor.
+   - **Volume ratio** — current volume / 20-candle average — context for the AI advisor.
+   - **ATR 14** (Wilder EWM, no TA-Lib) — used to compute the dynamic stoploss.
 
-La señal de salida es el cruce inverso (EMA 20 cae por debajo de EMA 50), complementada por `minimal_roi` (10%) y el stoploss dinámico.
-
----
-
-## Sizing (tamaño de posición)
-
-El tamaño se calcula en dos pasos:
-
-1. **Freqtrade** calcula el stake basado en `stake_amount = 50 USDT`.
-2. **RiskGate** puede reducirlo (nunca ampliarlo):
-   - Máx. 2% del equity real por trade.
-   - Máx. 50 USDT absoluto por posición.
-   - Máx. 200 USDT de exposición total abierta.
+The exit signal is the reverse crossover (EMA 20 falls below EMA 50), complemented by `minimal_roi` (10%) and the dynamic stoploss.
 
 ---
 
-## Flujo de decisión por cada señal de compra
+## Position sizing
+
+Size is calculated in two steps:
+
+1. **Freqtrade** computes the stake based on `stake_amount = 50 USDT`.
+2. **RiskGate** can reduce it (never increase):
+   - Max 2% of real equity per trade.
+   - Max 50 USDT absolute per position.
+   - Max 200 USDT total open exposure.
+
+---
+
+## Decision flow per buy signal
 
 ```
-Señal EMA → confirm_trade_entry()
+EMA signal → confirm_trade_entry()
     │
-    ├── Kill switch activo? → RECHAZA
+    ├── Kill switch active? → REJECT
     │
     ├── AI Advisor (Bedrock / Claude Opus 4)
-    │       Analiza: precio, EMAs, RSI, volumen, drawdown, P&L diario
-    │       → veto? → RECHAZA  (fail-safe: si falla, pasa)
+    │       Receives: price, EMAs, RSI, volume, drawdown, daily P&L
+    │       → veto? → REJECT  (fail-safe: on any error, passes through)
     │
     └── RiskGate.evaluate()
-            1. Circuit breakers activos? → RECHAZA
-            2. Par en blacklist? → RECHAZA
-            3. Par en whitelist? (si está definida) → RECHAZA si no está
-            4. Rate limit órdenes/minuto → RECHAZA
-            5. Slippage excesivo? → RECHAZA
-            6. Sizing: % capital + caps absolutos
-            7. Notional mínimo (10 USDT) → RECHAZA si queda por debajo
-            → APRUEBA (o con tamaño reducido)
+            1. Circuit breakers active?            → REJECT
+            2. Pair in blacklist?                  → REJECT
+            3. Pair in whitelist? (if defined)     → REJECT if absent
+            4. Orders-per-minute rate limit        → REJECT
+            5. Excessive slippage?                 → REJECT
+            6. Sizing: % equity + absolute caps
+            7. Minimum notional (10 USDT)          → REJECT if below
+            → APPROVE (possibly with reduced size)
 ```
 
 ---
 
 ## Stoploss
 
-El bot usa **doble stoploss** para máxima protección:
+The bot uses a **double stoploss** for maximum protection:
 
-| Capa | Mecanismo | Detalle |
-|---|---|---|
-| **ATR dinámico** | `custom_stoploss` de Freqtrade | `stop = precio_entrada − ATR×2`. Se adapta a la volatilidad del momento. |
-| **Suelo fijo** | Clase `stoploss = -0.10` | Freqtrade fuerza este límite superior: el stoploss nunca puede superar el −10%. |
-| **Orden en Binance** | `stoploss_on_exchange: true` | Freqtrade envía una orden stop directamente al exchange. Si el bot se cae, Binance ejecuta el stop igualmente. |
+| Layer | Mechanism | Detail |
+|-------|-----------|--------|
+| **Dynamic ATR** | Freqtrade `custom_stoploss` | `stop = entry_price − ATR×2`. Adapts to current volatility. |
+| **Hard floor** | Class-level `stoploss = -0.10` | Freqtrade enforces this as ceiling: stoploss can never be worse than −10%. |
+| **Exchange order** | `stoploss_on_exchange: true` | Freqtrade sends a stop order directly to Binance. If the bot goes down, Binance executes the stop. |
 
-El ATR se calcula con la fórmula de Wilder (EWM con `com=13`, panda-nativo, sin TA-Lib).
+ATR is computed with Wilder's EWM formula (`ewm(com=13, adjust=False)`) — pandas-native, no TA-Lib.
 
 ---
 
-## Circuit breakers (parada automática)
+## Circuit breakers (automatic halt)
 
-El bot se detiene automáticamente (sin intervención humana) si:
+The bot stops opening new positions automatically (no human needed) if:
 
-| Condición | Umbral |
-|---|---|
-| Pérdida diaria | ≥ 5% del equity |
-| Drawdown desde el pico | ≥ 10% del equity pico |
+| Condition | Threshold |
+|-----------|-----------|
+| Daily loss | ≥ 5% of equity |
+| Drawdown from peak | ≥ 10% of peak equity |
 
-Además, Freqtrade tiene sus propias **protections**:
-- `CooldownPeriod`: 2 velas de espera tras cerrar una posición.
-- `MaxDrawdown`: para si el drawdown supera 10% en 48 velas.
-- `StoplossGuard`: para si hay ≥ 4 stop-losses en 24 velas.
+Freqtrade also has its own **protections**:
+- `CooldownPeriod`: 2-candle wait after closing a position.
+- `MaxDrawdown`: halt if drawdown exceeds 10% over 48 candles.
+- `StoplossGuard`: halt if ≥ 4 stop-losses fire within 24 candles.
 
 ---
 
 ## AI Advisor (AWS Bedrock / Claude Opus 4)
 
-- Solo puede **vetar** una operación, nunca iniciarla ni ampliarla.
-- Recibe contexto completo: precio, EMAs, RSI, volumen, últimos 5 cierres, equity, drawdown, P&L diario.
-- Usa **extended thinking** (5000 tokens de razonamiento interno antes de decidir).
-- Si Bedrock falla o no está disponible → `NullAdvisor` → la operación continúa (fail-safe).
+- Can only **veto** a trade — never initiate or enlarge one.
+- Receives full context: price, EMAs, RSI, volume, last 5 closes, equity, drawdown, daily P&L.
+- Uses **extended thinking** (5,000 reasoning tokens before deciding).
+- If Bedrock fails or is unavailable → `NullAdvisor` → trade proceeds (fail-safe).
 
 ---
 
 ## Audit trail
 
-Cada decisión se persiste en SQLite (`user_data/olibuguard_audit.sqlite`):
+Every decision is persisted in SQLite (`user_data/olibuguard_audit.sqlite`):
 
-- **DecisionAudit**: qué pair, qué precio, qué decidió el risk gate y por qué.
-- **EquityPoint**: snapshot del equity cada 5 minutos como máximo.
+- **audit_log**: pair, price, risk gate verdict and reason.
+- **equity_curve**: equity snapshot at most every 5 minutes.
 
-Al arrancar, el bot restaura el **equity pico** desde la BD para que el circuit breaker de drawdown no se resetee tras un reinicio.
-
----
-
-## Alertas Telegram
-
-Notificaciones automáticas para:
-- Arranque del bot.
-- Activación del kill switch.
-- Equity drift > 5% intra-candle (posible desincronía con el exchange).
+On startup, the bot restores the **peak equity** from the DB so the drawdown circuit breaker
+survives restarts without resetting.
 
 ---
 
-## Kill switch manual
+## Telegram alerts
 
-Para detener entradas nuevas de forma inmediata (sin tocar posiciones abiertas):
+Automatic notifications for:
+- Bot startup.
+- Kill switch activation.
+- Equity drift > 5% intra-candle (possible desync with the exchange).
+
+---
+
+## Manual kill switch
+
+Stops new entries immediately without closing open positions:
 
 ```bash
-task kill        # activa el kill switch (crea fichero KILL_SWITCH)
-task resume      # desactiva el kill switch
+task kill        # activate (creates KILL_SWITCH file)
+task resume      # deactivate
 ```
 
-El fichero `user_data/KILL_SWITCH` es la señal. El bot lo comprueba antes de cada entrada.
+The file `user_data/KILL_SWITCH` is the sentinel. The bot checks it before every entry.

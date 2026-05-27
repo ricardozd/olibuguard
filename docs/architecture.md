@@ -1,19 +1,19 @@
-# Olibuguard — Arquitectura
+# Olibuguard — Architecture
 
-## Principio de diseño
+## Design principle
 
-**Arquitectura hexagonal**: el core de olibuguard (`olibuguard.*`) no conoce Freqtrade.
-Toda la lógica de negocio vive en el core; Freqtrade es solo un adaptador de entrada/salida.
+**Hexagonal architecture**: the olibuguard core (`olibuguard.*`) has no knowledge of Freqtrade.
+All business logic lives in the core; Freqtrade is just an input/output adapter.
 
 ```
 ┌─────────────────────────────────────────────┐
 │              Freqtrade (framework)           │
 │                                             │
-│   OlibuguardStrategy (adaptador)            │
-│   ├── populate_indicators   (señales+ATR)   │
+│   OlibuguardStrategy (adapter)              │
+│   ├── populate_indicators   (signals+ATR)   │
 │   ├── custom_stake_amount   (sizing)        │
-│   ├── confirm_trade_entry   (decisión)      │
-│   └── custom_stoploss       (ATR dinámico)  │
+│   ├── confirm_trade_entry   (decision)      │
+│   └── custom_stoploss       (dynamic ATR)   │
 │                    │                        │
 └────────────────────┼────────────────────────┘
                      │ domain types
@@ -32,91 +32,90 @@ Toda la lógica de negocio vive en el core; Freqtrade es solo un adaptador de en
 
 ---
 
-## Módulos del core
+## Core modules
 
 ### `domain/`
-Tipos puros sin dependencias externas.
+Pure types with no external dependencies.
 - `models.py` — `OrderIntent`, `PortfolioState`, `RiskVerdict`, `MarketContext`, `Side`
-- `ports.py` — Protocolos (interfaces) para `AIAdvisor`, `AuditSink`, `AlertSink`
+- `ports.py` — Protocols (interfaces) for `AIAdvisor`, `AuditSink`, `AlertSink`
 
 ### `risk/gate.py` — RiskGate
-El módulo invariante. Evalúa una `OrderIntent` contra el `PortfolioState` y devuelve un `RiskVerdict`.
-Puede rechazar o reducir el tamaño, nunca ampliar.
-Ver [overview.md](overview.md) para el orden de evaluación.
+The invariant module. Evaluates an `OrderIntent` against the `PortfolioState` and returns a `RiskVerdict`.
+Can reject or reduce size — never increase. See [overview.md](overview.md) for evaluation order.
 
 ### `advisor/`
 - `base.py` — `AIAdvisor` Protocol + `NullAdvisor` (no-op, fail-safe default)
-- `bedrock.py` — `BedrockAdvisor`: llama a Claude vía AWS Bedrock. Cualquier error → `None` (abstención).
+- `bedrock.py` — `BedrockAdvisor`: calls Claude via AWS Bedrock. Any error → `None` (abstention).
 
 ### `audit/`
 - `records.py` — `DecisionAudit`, `EquityPoint` (dataclasses)
 - `sink.py` — `AuditSink` Protocol + `NullAuditSink`
-- `sqlite.py` — `SQLiteAuditSink`: persistencia real
-- `version.py` — hash del código en ejecución para el audit trail
+- `sqlite.py` — `SQLiteAuditSink`: real persistence
+- `version.py` — hash of the running code for the audit trail
 
 ### `alerts/`
 - `sink.py` — `AlertSink` Protocol + `NullAlertSink`
-- `telegram.py` — `TelegramAlertSink`: envía mensajes al bot de Telegram
+- `telegram.py` — `TelegramAlertSink`: sends messages to the Telegram bot
 
 ### `kill_switch.py`
-Fichero centinela en disco. `is_active()` = el fichero existe.
-`task kill` / `task resume` lo crean/borran.
+File sentinel on disk. `is_active()` = file exists.
+`task kill` / `task resume` create/delete it.
 
 ### `reconciliation.py`
-- `restore_peak_equity()` — lee el equity pico de la BD al arrancar
-- `check_equity_drift()` — detecta desincronía > 5% entre la BD y el exchange
+- `restore_peak_equity()` — reads peak equity from DB on startup
+- `check_equity_drift()` — detects > 5% desync between DB and exchange
 
 ### `failsafe.py`
-- `run_safe(label, fn, default)` — ejecuta `fn`, captura cualquier excepción, devuelve `default`
-- `ErrorBudget` — contador de fallos consecutivos; tras N fallos activa el kill switch
+- `run_safe(label, fn, default)` — runs `fn`, catches any exception, returns `default`
+- `ErrorBudget` — consecutive failure counter; after N failures activates the kill switch
 
 ### `config.py`
-Modelos Pydantic para `AppConfig`, `RiskLimits`, `AIConfig`. Validación estricta (`extra = "forbid"`).
+Pydantic models for `AppConfig`, `RiskLimits`, `AIConfig`. Strict validation (`extra = "forbid"`).
 
 ---
 
-## Flujo de datos por vela
+## Data flow per candle
 
 ```
-Nueva vela 5m
+New 5m candle
     │
     ▼
 populate_indicators()
-    Calcula EMA 20, EMA 50, RSI 14, volume_ratio, ATR 14
-    Genera señal: ema_cross_up = 1 si EMA20 > EMA50
+    Computes EMA 20, EMA 50, RSI 14, volume_ratio, ATR 14
+    Generates signal: ema_cross_up = 1 if EMA20 > EMA50
     │
     ▼
 populate_entry_trend()
     enter_long = ema_cross_up
     │
-    ▼  (si hay señal)
+    ▼  (if signal present)
 custom_stake_amount()
-    RiskGate captura el tamaño máximo permitido
+    RiskGate caps the maximum allowed size
     │
     ▼
 confirm_trade_entry()
-    1. ¿Kill switch activo? → False
-    2. AI Advisor → ¿veto? → False
-    3. RiskGate.evaluate() → ¿aprobado? → True/False
-    4. Audit: registra la decisión
+    1. Kill switch active? → False
+    2. AI Advisor → veto? → False
+    3. RiskGate.evaluate() → approved? → True/False
+    4. Audit: record the decision
 
-En paralelo, por cada posición abierta en cada nueva vela:
+In parallel, for each open position on every new candle:
     ▼
 custom_stoploss()
-    Lee ATR de la última vela analizada
+    Reads ATR from the last analyzed candle
     stop_price = current_rate − ATR × 2
-    Devuelve stoploss relativo (nunca peor que −10%)
-    → Freqtrade sincroniza la orden stop en Binance (stoploss_on_exchange)
+    Returns relative stoploss (never worse than −10%)
+    → Freqtrade syncs the stop order on Binance (stoploss_on_exchange)
 ```
 
 ---
 
-## Principios de seguridad
+## Security principles
 
-1. **Fail-safe**: cualquier componente opcional (AI, audit, alerts) que falle → el bot continúa.
-2. **Veto-only AI**: la IA solo puede rechazar, nunca iniciar ni ampliar.
-3. **Doble circuit breaker**: olibuguard (código) + Freqtrade (protections) como segunda red.
-4. **Doble stoploss**: ATR dinámico por código (`custom_stoploss`) + orden stop en Binance (`stoploss_on_exchange`). Si el bot cae, Binance ejecuta el stop igualmente.
-5. **Sin claves en disco**: credenciales del exchange vía env vars; credenciales AWS via STS temporal.
-6. **Audit inmutable**: SQLite append-only, nunca se sobreescribe un registro.
-7. **Kill switch instantáneo**: fichero en disco, se comprueba antes de cada entrada.
+1. **Fail-safe**: any optional component (AI, audit, alerts) that fails → bot continues.
+2. **Veto-only AI**: the AI can only reject, never initiate or enlarge.
+3. **Double circuit breaker**: olibuguard (code) + Freqtrade (protections) as a second net.
+4. **Double stoploss**: dynamic ATR via code (`custom_stoploss`) + stop order on Binance (`stoploss_on_exchange`). If the bot goes down, Binance still executes the stop.
+5. **No keys on disk**: exchange credentials via env vars; AWS credentials via temporary STS tokens.
+6. **Immutable audit**: SQLite append-only — records are never overwritten.
+7. **Instant kill switch**: file on disk, checked before every entry.

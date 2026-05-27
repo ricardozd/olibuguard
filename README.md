@@ -1,100 +1,101 @@
 # olibuguard
 
-Bot de trading automático de criptomonedas — **seguridad y guardrails primero**.
+Automated crypto trading bot — **safety and guardrails first**.
 
-Construido sobre Freqtrade como proyecto personal de aprendizaje. Arquitectura hexagonal en Python:
-el core (`olibuguard.*`) no conoce Freqtrade; `OlibuguardStrategy` es el adaptador.
-
----
-
-## Estado actual
-
-| Fase | Descripción | Estado |
-|------|-------------|--------|
-| **0 – Setup** | Esqueleto hexagonal, tooling, smoke test, guardrails base | ✅ completo |
-| **1 – Estrategia** | Integración Freqtrade, señal EMA 20/50, backtest reproducible | ✅ completo |
-| **2 – Safety layer** | Circuit breakers, audit DB, kill-switch, reconciliación, error budget, alertas Telegram | ✅ completo |
-| **3 – AI Advisor** | AWS Bedrock (Claude Opus 4 + extended thinking) como veto-only advisor | ✅ completo |
-| **4 – Live** | Binance real con capital mínimo | 🟡 en curso |
-
-**Ahora mismo**: corriendo en paper mode (5m, BTC/USDT + ETH/USDT) con AI advisor activo.
+Built on top of Freqtrade as a personal learning project. Hexagonal architecture in Python:
+the core (`olibuguard.*`) has no knowledge of Freqtrade; `OlibuguardStrategy` is the adapter.
 
 ---
 
-## Filosofía de diseño
+## Current status
 
-- **Invariant risk gate**: la estrategia propone, el risk gate decide. Toda orden pasa por: sizing dinámico (% equity), circuit breakers, slippage guard, whitelist/blacklist, rate limit y notional mínimo.
-- **AI veto-only**: el advisor solo puede rechazar una operación, nunca iniciarla ni ampliarla. Cualquier fallo de Bedrock → `NullAdvisor` → la operación continúa (fail-safe).
-- **Doble stoploss**: ATR dinámico (stop = precio - ATR×2) + orden enviada directamente a Binance (`stoploss_on_exchange`). Si el bot cae, Binance ejecuta el stop.
-- **Secretos fuera del código**: credenciales via `.env`. AWS via tokens STS de 12h (`task aws-refresh`), nunca claves permanentes.
+| Phase | Description | Status |
+|-------|-------------|--------|
+| **0 – Setup** | Hexagonal skeleton, tooling, smoke test, base guardrails | ✅ done |
+| **1 – Strategy** | Freqtrade integration, EMA 20/50 signal, reproducible backtest | ✅ done |
+| **2 – Safety layer** | Circuit breakers, audit DB, kill-switch, reconciliation, error budget, Telegram alerts | ✅ done |
+| **3 – AI Advisor** | AWS Bedrock (Claude Opus 4 + extended thinking) as veto-only advisor | ✅ done |
+| **4 – Live** | Real Binance orders with minimal capital | 🟡 in progress |
+
+**Right now**: running in paper mode (5m, BTC/USDT + ETH/USDT) with AI advisor active.
 
 ---
 
-## Arranque rápido (Docker)
+## Design philosophy
+
+- **Invariant risk gate**: the strategy proposes, the risk gate decides. Every order passes through: dynamic sizing (% equity), circuit breakers, slippage guard, whitelist/blacklist, rate limit, and minimum notional.
+- **AI veto-only**: the advisor can only reject a trade, never initiate or enlarge it. Any Bedrock failure → `NullAdvisor` → trade proceeds (fail-safe).
+- **Double stoploss**: dynamic ATR (stop = price − ATR×2) + order sent directly to Binance (`stoploss_on_exchange`). If the bot goes down, Binance still executes the stop.
+- **Secrets outside the codebase**: credentials via `.env`. AWS via 12h STS tokens (`task aws-refresh`), never permanent keys.
+
+---
+
+## Quick start (Docker)
 
 ```bash
-# 1. Credenciales AWS para el AI advisor (tokens STS, válidos ~12 h)
+# 1. AWS credentials for the AI advisor (STS tokens, valid ~12 h)
 aws login
 task aws-refresh
 
-# 2. Paper mode (sin dinero real)
+# 2. Paper mode (no real money)
 task paper-up
 curl -s -X POST http://localhost:8081/api/v1/start -u olibuguard:rioli1010!
 
-# 3. Live mode (cuando tengas USDT en Binance)
+# 3. Live mode (when you have USDT on Binance)
 task docker-up
 curl -s -X POST http://localhost:8081/api/v1/start -u olibuguard:rioli1010!
 ```
 
-**FreqUI**: http://localhost:8081 — `olibuguard` / password en `.env`
+**FreqUI**: http://localhost:8081 — `olibuguard` / password in `.env`
 
 ---
 
-## Cómo opera el bot
+## How the bot operates
 
-**Señal**: EMA 20 cruza por encima de EMA 50 en vela de 5m → candidato de compra.
+**Signal**: EMA 20 crosses above EMA 50 on a 5m candle → buy candidate.
 
-**Flujo de decisión**:
+**Decision flow**:
 ```
-Señal EMA → confirm_trade_entry()
-    ├── Kill switch activo?          → RECHAZA
-    ├── AI Advisor (Claude Opus 4)   → ¿veto?   → RECHAZA  (fail-safe si falla)
+EMA signal → confirm_trade_entry()
+    ├── Kill switch active?              → REJECT
+    ├── AI Advisor (Claude Opus 4)       → veto?  → REJECT  (fail-safe if error)
     └── RiskGate
-            ├── Circuit breakers (drawdown ≥10% o pérdida diaria ≥5%) → RECHAZA
+            ├── Circuit breakers (drawdown ≥10% or daily loss ≥5%) → REJECT
             ├── Whitelist / blacklist
-            ├── Rate limit órdenes/minuto
-            ├── Slippage excesivo
-            ├── Sizing: mín(2% equity, 50 USDT)
-            └── Notional mínimo 10 USDT
+            ├── Rate limit orders/minute
+            ├── Excessive slippage
+            ├── Sizing: min(2% equity, 50 USDT)
+            └── Minimum notional 10 USDT
 ```
 
-**Stoploss**: dinámico por ATR (se adapta a la volatilidad del momento). Suelo fijo en -10%.
+**Stoploss**: dynamic ATR (adapts to current volatility). Hard floor at −10%.
+Binance holds a stop order directly — survives bot downtime.
 
-**Salida**: cruce inverso EMA + `minimal_roi` (10%) + stoploss.
-
----
-
-## Safety layers (Fase 2)
-
-| Capa | Qué hace |
-|------|----------|
-| **A – Circuit breakers** | Drawdown ≥ 10% o pérdida diaria ≥ 5% → para nuevas entradas |
-| **B – Audit DB** | Cada decisión del risk gate persiste en SQLite (`olibuguard_audit.sqlite`) |
-| **C – Equity curve** | Snapshot de equity cada 5 minutos |
-| **D – Kill switch** | Fichero centinela `KILL_SWITCH`; `task kill` / `task resume` |
-| **E – Reconciliación** | Peak equity restaurado desde DB al arrancar; drift >5% genera alerta |
-| **F – Error budget** | 5 fallos consecutivos de lectura del wallet → kill switch automático |
-| **G – Telegram** | Alertas de arranque, circuit breaker, drift, error budget |
+**Exit**: reverse EMA cross + `minimal_roi` (10%) + stoploss.
 
 ---
 
-## Comandos útiles
+## Safety layers (Phase 2)
+
+| Layer | What it does |
+|-------|-------------|
+| **A – Circuit breakers** | Drawdown ≥ 10% or daily loss ≥ 5% → halt new entries |
+| **B – Audit DB** | Every risk gate decision persisted in SQLite (`olibuguard_audit.sqlite`) |
+| **C – Equity curve** | Equity snapshot every 5 minutes |
+| **D – Kill switch** | Sentinel file `KILL_SWITCH`; `task kill` / `task resume` |
+| **E – Reconciliation** | Peak equity restored from DB on startup; drift >5% triggers alert |
+| **F – Error budget** | 5 consecutive wallet-read failures → automatic kill switch |
+| **G – Telegram** | Alerts on startup, circuit breaker trigger, equity drift |
+
+---
+
+## Useful commands
 
 ```bash
-task            # listar todos los tasks disponibles
+task            # list all available tasks
 
-# Calidad
-task check      # lint + typecheck + tests (gate completo)
+# Quality gate
+task check      # lint + typecheck + tests
 
 # Docker
 task paper-up   # paper mode (dry_run=true)
@@ -102,7 +103,7 @@ task docker-up  # live mode  (dry_run=false)
 task docker-down
 task docker-logs
 
-# AWS (renovar cada ~12 h)
+# AWS (renew every ~12 h)
 task aws-refresh
 
 # Kill switch
@@ -122,53 +123,54 @@ sqlite3 user_data/olibuguard_audit.sqlite \
 
 ---
 
-## Estructura
+## Project structure
 
 ```
 olibuguard/
 ├── Taskfile.yml                    # task runner
-├── Dockerfile / docker-compose.yml # despliegue 24/7
+├── Dockerfile / docker-compose.yml # 24/7 daemon deployment
 ├── pyproject.toml                  # deps, ruff, mypy --strict, pytest
 │
-├── olibuguard/                     # core (sin dependencias de Freqtrade)
+├── olibuguard/                     # core (no Freqtrade dependencies)
 │   ├── advisor/    bedrock.py      # BedrockAdvisor (Claude Opus 4, veto-only)
 │   ├── audit/      sqlite.py       # DecisionAudit · EquityPoint · SQLiteAuditSink
 │   ├── alerts/     telegram.py     # TelegramAlertSink
 │   ├── domain/     models.py       # OrderIntent · PortfolioState · RiskVerdict
-│   ├── risk/       gate.py         # RiskGate — núcleo invariante
+│   ├── risk/       gate.py         # RiskGate — invariant core
 │   ├── config.py                   # AppConfig · RiskLimits · AIConfig (pydantic)
 │   ├── failsafe.py                 # run_safe · ErrorBudget
 │   ├── kill_switch.py              # KillSwitch
-│   └── reconciliation.py           # restore_peak_equity · check_equity_drift
+│   └── reconciliation.py          # restore_peak_equity · check_equity_drift
 │
 ├── user_data/
-│   ├── config.json                 # Freqtrade (pares, ROI, stoploss, protections)
-│   ├── config.yaml                 # olibuguard (risk limits, AI advisor) — no commitear
+│   ├── config.json                 # Freqtrade (pairs, ROI, stoploss, protections)
+│   ├── config.yaml                 # olibuguard (risk limits, AI advisor) — do not commit
 │   └── strategies/
-│       └── OlibuguardStrategy.py   # adaptador IStrategy → core
+│       └── OlibuguardStrategy.py   # IStrategy adapter → core
 │
 ├── docs/
-│   ├── overview.md                 # qué hace el bot y cómo opera
-│   ├── architecture.md             # diseño hexagonal, módulos, flujo de datos
-│   └── operations.md               # runbook: arrancar, renovar AWS, backtesting
+│   ├── overview.md                 # what the bot does and how it operates
+│   ├── architecture.md             # hexagonal design, modules, data flow
+│   ├── operations.md               # runbook: start, renew AWS, backtesting
+│   └── roadmap.md                  # path to $300–500/month goal
 │
 └── tests/                          # pytest + hypothesis
 ```
 
 ---
 
-## Requisitos
+## Requirements
 
-| Herramienta | Instalación |
-|-------------|-------------|
-| Python 3.12+ | vía `uv` |
+| Tool | Installation |
+|------|-------------|
+| Python 3.12+ | via `uv` |
 | [`uv`](https://docs.astral.sh/uv/) | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | [`Task`](https://taskfile.dev) | `brew install go-task` |
 | TA-Lib | `brew install ta-lib` (macOS) |
-| Docker Desktop | para el modo daemon 24/7 |
+| Docker Desktop | for 24/7 daemon mode |
 
 ```bash
 brew install ta-lib go-task
 task install
-task check      # debe quedar verde
+task check      # must be green
 ```
