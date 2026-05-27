@@ -12,10 +12,14 @@ services:
     env_file:
       - path: .env
         required: false
+    environment:
+      # Tell boto3 exactly where the AWS config lives regardless of which Linux
+      # user runs inside the container (ftuser home != /root).
+      AWS_CONFIG_FILE: /root/.aws/config
+      AWS_SHARED_CREDENTIALS_FILE: /root/.aws/credentials
     volumes:
       - "./user_data:/freqtrade/user_data"
-      # AWS credentials for BedrockAdvisor (read-only; needed when ai.profile is set).
-      # Remove this line if you're not using the AI advisor or use env vars instead.
+      # AWS credentials for BedrockAdvisor — mounted read-only from the host.
       - "${HOME}/.aws:/root/.aws:ro"
     # FreqUI (Freqtrade web interface) — accessible at http://localhost:8080
     # Bound to loopback only: never reachable from the network.
