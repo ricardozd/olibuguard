@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from olibuguard.audit.records import DecisionAudit, EquityPoint
-from olibuguard.audit.sink import AuditSink, NullAuditSink
+from olibuguard.audit.sink import AuditReader, AuditSink, NullAuditSink
 from olibuguard.audit.version import code_version
 
 
@@ -62,3 +62,23 @@ def test_sqlite_sink_roundtrip(tmp_path: Path) -> None:
     points = sink.equity_points()
     assert len(points) == 1
     assert points[0].equity_quote == Decimal("1000.5")
+
+    # AuditReader reconciliation helpers
+    assert isinstance(sink, AuditReader)
+    assert sink.peak_equity_quote() == Decimal("1000.5")
+    last = sink.last_equity_point()
+    assert last is not None
+    assert last.equity_quote == Decimal("1000.5")
+
+
+def test_sqlite_reader_empty_db(tmp_path: Path) -> None:
+    pytest.importorskip("sqlalchemy")
+    from olibuguard.audit.sqlite import SQLiteAuditSink
+
+    sink = SQLiteAuditSink(tmp_path / "empty.sqlite")
+    assert sink.peak_equity_quote() == Decimal("0")
+    assert sink.last_equity_point() is None
+
+
+def test_null_sink_does_not_satisfy_audit_reader() -> None:
+    assert not isinstance(NullAuditSink(), AuditReader)

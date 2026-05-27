@@ -12,7 +12,7 @@ from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 from olibuguard.audit.records import DecisionAudit, EquityPoint
@@ -89,6 +89,27 @@ class SQLiteAuditSink:
                 )
                 for row in rows
             ]
+
+    def peak_equity_quote(self) -> Decimal:
+        """Return the maximum equity_quote ever recorded, or zero if no data."""
+        with Session(self._engine) as session:
+            result = session.execute(
+                select(func.max(_EquityRow.equity_quote))
+            ).scalar_one_or_none()
+            return Decimal("0") if result is None else Decimal(result)
+
+    def last_equity_point(self) -> EquityPoint | None:
+        """Return the most recently recorded equity point, or None if no data."""
+        with Session(self._engine) as session:
+            row = session.execute(
+                select(_EquityRow).order_by(_EquityRow.id.desc()).limit(1)
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            return EquityPoint(
+                at=datetime.fromisoformat(row.at),
+                equity_quote=Decimal(row.equity_quote),
+            )
 
     def equity_points(self) -> list[EquityPoint]:
         with Session(self._engine) as session:

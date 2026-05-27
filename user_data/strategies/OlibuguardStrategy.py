@@ -8,12 +8,18 @@ PortfolioState) and wires the risk gate as a second safety net:
   - custom_stake_amount  -> sizing: the risk gate caps the stake (% of capital)
   - confirm_trade_entry  -> final gate: veto by slippage / limits / circuit breakers
 
-Portfolio state fed to the gate (Phase 2, increments A–C): real equity from wallets,
-peak equity tracked in-memory and persisted to the audit DB, today's realized PnL
-from closed trades, and a periodic equity-curve snapshot via bot_loop_start.
-Reads are defensive: on failure we log and fall back to neutral values, never
-blocking trading on a read error (fail-safe). Audit failures also never block
-trading (fail-safe). All Freqtrade-specific access is confined to this adapter.
+Phase 2 safety layers:
+  A. Real equity/peak/PnL fed into circuit breakers.
+  B. Audit DB (SQLiteAuditSink) records every decision and equity snapshot.
+  C. Equity curve via bot_loop_start.
+  D. File-based kill switch (KILL_SWITCH sentinel) checked before every entry.
+  E. Reconciliation: peak equity restored from DB on startup so the drawdown
+     circuit breaker is not reset to zero after a restart; equity drift is
+     logged whenever it exceeds 5 % intra-candle.
+  F. Robust error handling via run_safe + ErrorBudget: consecutive wallet-read
+     failures automatically activate the kill switch after 5 misses.
+
+All Freqtrade-specific access is confined to this adapter.
 """
 
 from __future__ import annotations
@@ -31,11 +37,13 @@ from freqtrade.persistence import Trade
 from freqtrade.strategy import IStrategy
 
 from olibuguard.audit.records import DecisionAudit, EquityPoint
-from olibuguard.audit.sink import AuditSink, NullAuditSink
+from olibuguard.audit.sink import AuditReader, AuditSink, NullAuditSink
 from olibuguard.audit.version import code_version
 from olibuguard.config import AppConfig, load_config
 from olibuguard.domain.models import OrderIntent, PortfolioState, RiskVerdict, Side
+from olibuguard.failsafe import ErrorBudget, run_safe
 from olibuguard.kill_switch import KillSwitch
+from olibuguard.reconciliation import check_equity_drift, restore_peak_equity
 from olibuguard.risk.gate import RiskGate
 
 logger = logging.getLogger(__name__)
@@ -99,6 +107,25 @@ class OlibuguardStrategy(IStrategy):
                 "kill_switch_active_at_startup: path=%s", self._kill_switch.path
             )
 
+        # Error budget (F): 5 consecutive wallet-read failures → activate kill switch.
+        self._equity_budget = ErrorBudget(
+            "equity_read", max_consecutive=5, kill_switch=self._kill_switch
+        )
+
+        # Reconciliation (E): restore peak equity from the audit DB so the drawdown
+        # circuit breaker is not inadvertently reset to zero after a restart.
+        if isinstance(self._audit, AuditReader):
+            recorded_peak = run_safe(
+                "audit_peak_read", self._audit.peak_equity_quote, Decimal("0")
+            )
+            current_equity = self._read_equity()
+            self._peak_equity = restore_peak_equity(current_equity, recorded_peak)
+            logger.info(
+                "reconciliation.peak_restored: peak=%s current=%s",
+                self._peak_equity,
+                current_equity,
+            )
+
     def _gate(self) -> RiskGate:
         gate = getattr(self, "_risk", None)
         if gate is None:
@@ -131,55 +158,65 @@ class OlibuguardStrategy(IStrategy):
         now: datetime,
     ) -> None:
         """Persist a risk-gate decision; never raises (fail-safe)."""
-        try:
-            self._sink().record_decision(
-                DecisionAudit(
-                    at=now.astimezone(UTC),
-                    symbol=symbol,
-                    kind=kind,
-                    reference_price=reference_price,
-                    equity_quote=equity,
-                    approved=verdict.approved,
-                    reason=verdict.reason,
-                    quote_amount=(
-                        verdict.intent.quote_amount if verdict.intent is not None else None
-                    ),
-                    code_version=getattr(self, "_code_version", "unknown"),
-                )
-            )
-        except Exception as exc:  # audit must never block trading
-            logger.warning("audit_decision_failed: %s", exc)
+        record = DecisionAudit(
+            at=now.astimezone(UTC),
+            symbol=symbol,
+            kind=kind,
+            reference_price=reference_price,
+            equity_quote=equity,
+            approved=verdict.approved,
+            reason=verdict.reason,
+            quote_amount=(verdict.intent.quote_amount if verdict.intent is not None else None),
+            code_version=getattr(self, "_code_version", "unknown"),
+        )
+        run_safe("audit_decision", lambda: self._sink().record_decision(record), None)
 
     def bot_loop_start(self, current_time: datetime, **kwargs: Any) -> None:
-        """Record an equity snapshot for the equity curve (increment C)."""
-        try:
-            equity = self._read_equity()
-            self._sink().record_equity(
+        """Record equity snapshot and check for unexpected intra-candle drift (E+C)."""
+        equity = self._read_equity()
+
+        # Reconciliation (E): warn on unusual equity drift since the last snapshot.
+        sink = self._sink()
+        if isinstance(sink, AuditReader):
+            last = run_safe("audit_last_equity", sink.last_equity_point, None)
+            if last is not None:
+                warning = check_equity_drift(last.equity_quote, equity)
+                if warning:
+                    logger.warning("reconciliation.%s", warning)
+
+        run_safe(
+            "audit_equity",
+            lambda: sink.record_equity(
                 EquityPoint(at=current_time.astimezone(UTC), equity_quote=equity)
-            )
-        except Exception as exc:  # audit must never block trading
-            logger.warning("audit_equity_failed: %s", exc)
+            ),
+            None,
+        )
 
     def _read_equity(self) -> Decimal:
         wallets = self.wallets
-        if wallets is not None and hasattr(wallets, "get_total_stake_amount"):
-            try:
-                return Decimal(str(wallets.get_total_stake_amount()))
-            except Exception as exc:  # fail-safe: never block trading on a read error
-                logger.warning("equity_read_failed: %s", exc)
-        return Decimal("0")
+        if wallets is None or not hasattr(wallets, "get_total_stake_amount"):
+            return Decimal("0")
+        return run_safe(
+            "equity_read",
+            lambda: Decimal(str(wallets.get_total_stake_amount())),
+            Decimal("0"),
+            budget=getattr(self, "_equity_budget", None),
+        )
 
     def _realized_pnl_today(self, now: datetime) -> Decimal:
-        try:
-            start = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-            closed = Trade.get_trades_proxy(is_open=False, close_date=start)
-            return sum(
-                (Decimal(str(t.close_profit_abs)) for t in closed if t.close_profit_abs is not None),
+        start = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        return run_safe(
+            "realized_pnl_read",
+            lambda: sum(
+                (
+                    Decimal(str(t.close_profit_abs))
+                    for t in Trade.get_trades_proxy(is_open=False, close_date=start)
+                    if t.close_profit_abs is not None
+                ),
                 Decimal("0"),
-            )
-        except Exception as exc:  # fail-safe: a read failure must not halt trading
-            logger.warning("realized_pnl_read_failed: %s", exc)
-            return Decimal("0")
+            ),
+            Decimal("0"),
+        )
 
     def _portfolio_state(self, now: datetime) -> PortfolioState:
         equity = self._read_equity()
