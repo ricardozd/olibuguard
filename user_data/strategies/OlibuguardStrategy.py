@@ -6,29 +6,34 @@ PortfolioState) and wires the risk gate as a second safety net:
 
   - populate_*_trend     -> signals (example EMA20/50 strategy, Phase 1)
   - custom_stake_amount  -> sizing: the risk gate caps the stake (% of capital)
-  - confirm_trade_entry  -> final gate: veto by slippage / limits
+  - confirm_trade_entry  -> final gate: veto by slippage / limits / circuit breakers
 
-Real equity is read from self.wallets for %-of-capital sizing. Daily PnL and the
-equity peak (for the gate circuit breakers) are refined in Phase 2; meanwhile the
-live kill-switch is covered by the Freqtrade `protections` (MaxDrawdown /
-StoplossGuard) defined in this strategy.
+Portfolio state fed to the gate (Phase 2, increment A): real equity from wallets,
+in-memory peak equity (persisted with the audit DB in increment B), and today's
+realized PnL from closed trades. Reads are defensive: on failure we log and fall
+back to neutral values, never blocking trading on a read error (fail-safe).
+All Freqtrade-specific access is confined to this adapter.
 """
 
 from __future__ import annotations
 
+import logging
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from pandas import DataFrame
 
+from freqtrade.persistence import Trade
 from freqtrade.strategy import IStrategy
 
 from olibuguard.config import AppConfig, load_config
 from olibuguard.domain.models import OrderIntent, PortfolioState, Side
 from olibuguard.risk.gate import RiskGate
+
+logger = logging.getLogger(__name__)
 
 
 class OlibuguardStrategy(IStrategy):
@@ -66,6 +71,7 @@ class OlibuguardStrategy(IStrategy):
         cfg_path = os.environ.get("OLIBUGUARD_CONFIG")
         config = load_config(Path(cfg_path)) if cfg_path else AppConfig()
         self._risk = RiskGate(config.risk)
+        self._peak_equity = Decimal("0")  # in-memory; persisted in increment B
 
     def _gate(self) -> RiskGate:
         gate = getattr(self, "_risk", None)
@@ -74,12 +80,36 @@ class OlibuguardStrategy(IStrategy):
             self._risk = gate
         return gate
 
-    def _portfolio_state(self) -> PortfolioState:
-        equity = Decimal("0")
+    def _read_equity(self) -> Decimal:
         wallets = self.wallets
         if wallets is not None and hasattr(wallets, "get_total_stake_amount"):
-            equity = Decimal(str(wallets.get_total_stake_amount()))
-        return PortfolioState(equity_quote=equity)
+            try:
+                return Decimal(str(wallets.get_total_stake_amount()))
+            except Exception as exc:  # fail-safe: never block trading on a read error
+                logger.warning("equity_read_failed: %s", exc)
+        return Decimal("0")
+
+    def _realized_pnl_today(self, now: datetime) -> Decimal:
+        try:
+            start = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+            closed = Trade.get_trades_proxy(is_open=False, close_date=start)
+            return sum(
+                (Decimal(str(t.close_profit_abs)) for t in closed if t.close_profit_abs is not None),
+                Decimal("0"),
+            )
+        except Exception as exc:  # fail-safe: a read failure must not halt trading
+            logger.warning("realized_pnl_read_failed: %s", exc)
+            return Decimal("0")
+
+    def _portfolio_state(self, now: datetime) -> PortfolioState:
+        equity = self._read_equity()
+        peak = max(getattr(self, "_peak_equity", Decimal("0")), equity)
+        self._peak_equity = peak
+        return PortfolioState(
+            equity_quote=equity,
+            peak_equity_quote=peak,
+            realized_pnl_today_quote=self._realized_pnl_today(now),
+        )
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict[str, Any]) -> DataFrame:
         dataframe["ema_fast"] = dataframe["close"].ewm(span=20, adjust=False).mean()
@@ -119,7 +149,7 @@ class OlibuguardStrategy(IStrategy):
             quote_amount=Decimal(str(proposed_stake)),
             reference_price=Decimal(str(current_rate)),
         )
-        verdict = self._gate().evaluate(intent, self._portfolio_state())
+        verdict = self._gate().evaluate(intent, self._portfolio_state(current_time))
         if not verdict.approved or verdict.intent is None:
             return 0.0
         approved = float(verdict.intent.quote_amount)
@@ -152,4 +182,4 @@ class OlibuguardStrategy(IStrategy):
             reference_price=reference,
             execution_price=Decimal(str(rate)),
         )
-        return self._gate().evaluate(intent, self._portfolio_state()).approved
+        return self._gate().evaluate(intent, self._portfolio_state(current_time)).approved

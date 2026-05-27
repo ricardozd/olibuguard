@@ -392,6 +392,18 @@ Orden estricto. No se avanza de fase hasta cumplir los criterios de salida.
 - Reconciliación al arranque.
 - **Criterio de salida**: el bot lleva al menos 4 semanas en paper trading sin crashes, sin órdenes "raras", la equity curve es coherente con el backtest, y todos los kill-switches han sido probados manualmente.
 
+**Plan detallado (validado 2026-05-27).** En Camino A, Freqtrade ya aporta: persistencia de trades, dedup por client-order-id, reconexión y rate limits, reconciliación DB↔exchange al arranque, `protections` (kill-switch en runtime) y REST API/Telegram. No lo reconstruimos. Nuestra capa:
+
+- **A. Cableado de circuit breakers** *(primer incremento)* — el adaptador alimenta `PortfolioState` con equity real (`wallets`), pico de equity (en memoria; se persiste en B) y PnL realizado de hoy (`Trade.get_trades_proxy`), usando `current_time` del callback (correcto en backtest). Activa los breakers de drawdown/pérdida diaria del gate como segunda red. Lecturas defensivas: ante fallo → neutro + alerta, nunca bloquea (fail-safe).
+- **B. Auditoría (`audit_log`)** — `AuditSink` (Protocol) + SQLite **propia y separada** (SQLAlchemy 2 + alembic, extra `db`). Persiste cada decisión: inputs, señal, veredicto + motivo, resultado y commit SHA.
+- **C. `equity_curve`** — snapshot periódico del equity en la DB de auditoría (para validar coherencia con el backtest).
+- **D. Kill-switch** — soft stop por archivo `./KILL_SWITCH` (en `confirm_trade_entry`); flat/hard vía la REST API de Freqtrade, expuesto como `task stop`.
+- **E. Reconciliación** — check de coherencia al arranque (audit/equity vs estado de Freqtrade) → alerta + modo seguro si discrepan.
+- **F. Resiliencia** — excepciones específicas en DB/lecturas; **fallo de auditoría = alertar y continuar** (no bloquear capital por un fallo de log).
+- **G. Alertas** — notificaciones de Freqtrade (Telegram) habilitadas por variable de entorno.
+
+Secuencia: **A → B+C → D → E →** arrancar paper trading + ventana de 2–4 semanas (**G**).
+
 ### Fase 3 — IA opcional (opcional, en paralelo)
 - Interfaz `AIAdvisor` + `NullAdvisor`.
 - `BedrockAdvisor` detrás de feature flag.
