@@ -1,8 +1,10 @@
 """Control plane (CLI).
 
 Commands:
-  smoke  Start, read config, self-check the risk gate and exit cleanly.
-  run    Start the bot in a specific mode (backtest | paper | live).
+  smoke   Start, read config, self-check the risk gate and exit cleanly.
+  run     Start the bot in a specific mode (backtest | paper | live).
+  kill    Activate the kill switch — bot stops opening new positions immediately.
+  resume  Deactivate the kill switch — bot resumes normal operation.
 
 Guardrail (5.1): the mode is fixed at startup; ``live`` requires explicit
 confirmation via ``--i-understand-this-is-real-money`` and a red banner.
@@ -23,9 +25,12 @@ from olibuguard import __version__
 from olibuguard.advisor.base import NullAdvisor
 from olibuguard.config import AppConfig, load_config
 from olibuguard.domain.models import OrderIntent, PortfolioState, Side
+from olibuguard.kill_switch import KillSwitch
 from olibuguard.logging import configure_logging, get_logger
 from olibuguard.modes import Mode
 from olibuguard.risk.gate import RiskGate
+
+_DEFAULT_USER_DATA_DIR = Path("user_data")
 
 _console = Console()
 _LIVE_FLAG = "--i-understand-this-is-real-money"
@@ -125,6 +130,49 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_kill(args: argparse.Namespace) -> int:
+    user_data_dir = Path(args.user_data_dir)
+    ks = KillSwitch(user_data_dir / "KILL_SWITCH")
+    if ks.is_active():
+        _console.print(
+            f"[yellow]Kill switch already active:[/] {ks.path}\n"
+            f"{ks.path.read_text().strip()}"
+        )
+        return 0
+    reason = args.reason or "manual via CLI"
+    ks.activate(reason=reason)
+    _console.print(
+        Panel(
+            f"[bold]KILL SWITCH ACTIVATED[/]\n"
+            f"path:   {ks.path}\n"
+            f"reason: {reason}\n\n"
+            f"The bot will NOT open new positions until you run:\n"
+            f"  [bold]olibuguard resume[/]",
+            style="bold red",
+            expand=False,
+        )
+    )
+    return 0
+
+
+def _cmd_resume(args: argparse.Namespace) -> int:
+    user_data_dir = Path(args.user_data_dir)
+    ks = KillSwitch(user_data_dir / "KILL_SWITCH")
+    if not ks.is_active():
+        _console.print("[green]Kill switch is not active — nothing to do.[/]")
+        return 0
+    ks.deactivate()
+    _console.print(
+        Panel(
+            "[bold green]KILL SWITCH DEACTIVATED[/]\n"
+            "The bot will resume opening new positions on the next candle.",
+            style="bold green",
+            expand=False,
+        )
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()  # load .env if present (secrets out of the code; see .env.example)
     parser = argparse.ArgumentParser(
@@ -149,9 +197,34 @@ def main(argv: list[str] | None = None) -> int:
         help="Mandatory confirmation to trade LIVE with real money.",
     )
 
+    p_kill = sub.add_parser(
+        "kill",
+        help="Activate the kill switch — stops the bot from opening new positions.",
+    )
+    p_kill.add_argument(
+        "--user-data-dir",
+        default=str(_DEFAULT_USER_DATA_DIR),
+        help="Path to Freqtrade's user_data directory (default: ./user_data).",
+    )
+    p_kill.add_argument("--reason", default=None, help="Optional reason recorded in the sentinel.")
+
+    p_resume = sub.add_parser(
+        "resume",
+        help="Deactivate the kill switch — the bot resumes opening new positions.",
+    )
+    p_resume.add_argument(
+        "--user-data-dir",
+        default=str(_DEFAULT_USER_DATA_DIR),
+        help="Path to Freqtrade's user_data directory (default: ./user_data).",
+    )
+
     args = parser.parse_args(argv)
     if args.command == "smoke":
         return _cmd_smoke(args)
     if args.command == "run":
         return _cmd_run(args)
+    if args.command == "kill":
+        return _cmd_kill(args)
+    if args.command == "resume":
+        return _cmd_resume(args)
     return 2

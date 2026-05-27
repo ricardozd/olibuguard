@@ -75,3 +75,13 @@ tasks:
       - >-
         uv run freqtrade backtesting --userdir {{.USERDIR}} --config {{.FT_CONFIG}}
         --strategy {{.STRATEGY}} --enable-protections {{.CLI_ARGS}}
+
+  kill:
+    desc: Activate the kill switch — bot stops opening new positions immediately
+    cmds:
+      - uv run olibuguard kill --user-data-dir {{.USERDIR}} {{.CLI_ARGS}}
+
+  resume:
+    desc: Deactivate the kill switch — bot resumes normal operation
+    cmds:
+      - uv run olibuguard resume --user-data-dir {{.USERDIR}}

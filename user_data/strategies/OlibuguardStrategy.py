@@ -34,8 +34,9 @@ from olibuguard.audit.records import DecisionAudit, EquityPoint
 from olibuguard.audit.sink import AuditSink, NullAuditSink
 from olibuguard.audit.version import code_version
 from olibuguard.config import AppConfig, load_config
-from olibuguard.domain.models import OrderIntent, PortfolioState, Side
-from olibuguard.risk.gate import RiskGate, RiskVerdict
+from olibuguard.domain.models import OrderIntent, PortfolioState, RiskVerdict, Side
+from olibuguard.kill_switch import KillSwitch
+from olibuguard.risk.gate import RiskGate
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,14 @@ class OlibuguardStrategy(IStrategy):
             logger.warning("audit_sink_unavailable: %s — using NullAuditSink", exc)
         self._audit: AuditSink = audit
 
+        # Kill switch: sentinel file <user_data_dir>/KILL_SWITCH.
+        user_data_dir_ks = Path(self.config.get("user_data_dir", "."))
+        self._kill_switch = KillSwitch(user_data_dir_ks / "KILL_SWITCH")
+        if self._kill_switch.is_active():
+            logger.warning(
+                "kill_switch_active_at_startup: path=%s", self._kill_switch.path
+            )
+
     def _gate(self) -> RiskGate:
         gate = getattr(self, "_risk", None)
         if gate is None:
@@ -103,6 +112,14 @@ class OlibuguardStrategy(IStrategy):
             sink = NullAuditSink()
             self._audit = sink
         return sink
+
+    def _ks(self) -> KillSwitch:
+        ks = getattr(self, "_kill_switch", None)
+        if ks is None:
+            # Fallback: sentinel in cwd (should only happen in unit tests).
+            ks = KillSwitch(Path(".") / "KILL_SWITCH")
+            self._kill_switch = ks
+        return ks
 
     def _audit_decision(
         self,
@@ -206,11 +223,24 @@ class OlibuguardStrategy(IStrategy):
     ) -> float:
         if proposed_stake <= 0:
             return 0.0
+        ref_price = Decimal(str(current_rate))
+        if self._ks().is_active():
+            state = self._portfolio_state(current_time)
+            self._audit_decision(
+                kind="stake",
+                symbol=pair,
+                reference_price=ref_price,
+                equity=state.equity_quote,
+                verdict=RiskVerdict(approved=False, reason="kill switch active"),
+                now=current_time,
+            )
+            logger.warning("kill_switch_blocked_stake: pair=%s", pair)
+            return 0.0
         intent = OrderIntent(
             symbol=pair,
             side=Side.BUY,
             quote_amount=Decimal(str(proposed_stake)),
-            reference_price=Decimal(str(current_rate)),
+            reference_price=ref_price,
         )
         state = self._portfolio_state(current_time)
         verdict = self._gate().evaluate(intent, state)
@@ -247,6 +277,18 @@ class OlibuguardStrategy(IStrategy):
             analyzed, _ = dp.get_analyzed_dataframe(pair, self.timeframe)
             if analyzed is not None and not analyzed.empty:
                 reference = Decimal(str(analyzed["close"].iloc[-1]))
+        if self._ks().is_active():
+            state = self._portfolio_state(current_time)
+            self._audit_decision(
+                kind="entry",
+                symbol=pair,
+                reference_price=reference,
+                equity=state.equity_quote,
+                verdict=RiskVerdict(approved=False, reason="kill switch active"),
+                now=current_time,
+            )
+            logger.warning("kill_switch_blocked_entry: pair=%s", pair)
+            return False
         intent = OrderIntent(
             symbol=pair,
             side=Side.BUY,
