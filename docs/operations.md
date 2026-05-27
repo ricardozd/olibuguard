@@ -2,19 +2,36 @@
 
 ## Arrancar el bot (Docker)
 
-```bash
-# 1. Autenticarse en AWS (sesión válida ~12 h, necesaria para el AI advisor)
-aws login
+### Paper mode (sin dinero real)
 
-# 2. Exportar credenciales STS al .env
+```bash
+# 1. Credenciales AWS para el AI advisor (tokens STS, válidos ~12 h)
+aws login
 task aws-refresh
 
-# 3. Build + arrancar como daemon
-task docker-up
+# 2. Build + arrancar en paper mode
+task paper-up
 
-# 4. Sacar del estado STOPPED (Freqtrade arranca parado por seguridad)
+# 3. Sacar del estado STOPPED
 curl -s -X POST http://localhost:8081/api/v1/start -u olibuguard:rioli1010!
 ```
+
+### Live mode (órdenes reales en Binance)
+
+```bash
+# 1. Credenciales AWS
+aws login
+task aws-refresh
+
+# 2. Build + arrancar en live mode
+task docker-up
+
+# 3. Sacar del estado STOPPED
+curl -s -X POST http://localhost:8081/api/v1/start -u olibuguard:rioli1010!
+```
+
+La diferencia entre ambos modos es únicamente la variable `FREQTRADE__DRY_RUN` que inyecta
+el task. La imagen Docker y la estrategia son idénticas.
 
 El bot queda corriendo 24/7 gracias a `restart: unless-stopped` en docker-compose.
 
@@ -51,9 +68,15 @@ Las credenciales STS expiran. Para renovarlas sin parar el bot:
 ```bash
 aws login           # si la sesión del host también expiró
 task aws-refresh    # escribe nuevos tokens en .env
-docker compose restart olibuguard
+
+# IMPORTANTE: restart no aplica cambios del compose file; usar down+up
+docker compose down
+task paper-up       # o task docker-up según el modo
 curl -s -X POST http://localhost:8081/api/v1/start -u olibuguard:rioli1010!
 ```
+
+> `docker compose restart` **no** recarga las variables de entorno del compose file.
+> Siempre usar `down` + `paper-up` / `docker-up`.
 
 ---
 
@@ -77,7 +100,7 @@ task install
 # Tests, lint, typecheck
 task check
 
-# Paper trading nativo (sin Docker)
+# Paper trading nativo (sin Docker, mercado real, sin órdenes reales)
 task paper
 ```
 
@@ -91,6 +114,20 @@ task download -- --timerange 20250101-20250401
 
 # Ejecutar backtest
 task backtest -- --timerange 20250101-20250401
+```
+
+---
+
+## Consultar el audit trail
+
+```bash
+# Últimas 20 decisiones del risk gate
+sqlite3 user_data/olibuguard_audit.sqlite \
+  "SELECT at, symbol, approved, reason FROM audit_log ORDER BY at DESC LIMIT 20;"
+
+# Últimas 10 snapshots de equity
+sqlite3 user_data/olibuguard_audit.sqlite \
+  "SELECT at, equity_quote FROM equity_curve ORDER BY at DESC LIMIT 10;"
 ```
 
 ---

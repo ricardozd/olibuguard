@@ -2,10 +2,12 @@
 
 ## Qué es
 
-Bot de trading automático de criptomonedas en modo **paper (dry-run)** sobre Binance.
+Bot de trading automático de criptomonedas sobre Binance.
 Construido como proyecto de aprendizaje sobre **Freqtrade** + arquitectura hexagonal en Python.
 
-Opera 24/7 en Docker. No ejecuta órdenes reales mientras `dry_run = true` en `config.json`.
+Opera 24/7 en Docker. Soporta dos modos:
+- **Paper mode** (`task paper-up`): dry-run, sin órdenes reales, ideal para validar en vivo.
+- **Live mode** (`task docker-up`): órdenes reales en Binance con capital mínimo.
 
 ---
 
@@ -14,7 +16,7 @@ Opera 24/7 en Docker. No ejecuta órdenes reales mientras `dry_run = true` en `c
 | Parámetro | Valor |
 |---|---|
 | Pares | BTC/USDT, ETH/USDT |
-| Timeframe | 1 h (velas horarias) |
+| Timeframe | 5 m (velas de 5 minutos) |
 | Exchange | Binance |
 | Moneda base | USDT |
 
@@ -22,14 +24,15 @@ Opera 24/7 en Docker. No ejecuta órdenes reales mientras `dry_run = true` en `c
 
 ## Señal de entrada
 
-La estrategia usa un **cruce de EMAs** en la vela de 1 h:
+La estrategia usa un **cruce de EMAs** en la vela de 5 m:
 
 1. **EMA 20** (rápida) cruza **por encima** de **EMA 50** (lenta) → señal de compra.
 2. La estrategia también calcula:
    - **RSI 14** (Wilder EWM, sin TA-Lib) — para contexto del advisor.
    - **Volume ratio** — volumen actual / media 20 velas — para contexto del advisor.
+   - **ATR 14** (Wilder EWM, sin TA-Lib) — para calcular el stoploss dinámico.
 
-La señal de salida es el cruce inverso (EMA 20 cae por debajo de EMA 50), complementada por los parámetros `minimal_roi` y `stoploss`.
+La señal de salida es el cruce inverso (EMA 20 cae por debajo de EMA 50), complementada por `minimal_roi` (10%) y el stoploss dinámico.
 
 ---
 
@@ -66,6 +69,20 @@ Señal EMA → confirm_trade_entry()
             7. Notional mínimo (10 USDT) → RECHAZA si queda por debajo
             → APRUEBA (o con tamaño reducido)
 ```
+
+---
+
+## Stoploss
+
+El bot usa **doble stoploss** para máxima protección:
+
+| Capa | Mecanismo | Detalle |
+|---|---|---|
+| **ATR dinámico** | `custom_stoploss` de Freqtrade | `stop = precio_entrada − ATR×2`. Se adapta a la volatilidad del momento. |
+| **Suelo fijo** | Clase `stoploss = -0.10` | Freqtrade fuerza este límite superior: el stoploss nunca puede superar el −10%. |
+| **Orden en Binance** | `stoploss_on_exchange: true` | Freqtrade envía una orden stop directamente al exchange. Si el bot se cae, Binance ejecuta el stop igualmente. |
+
+El ATR se calcula con la fórmula de Wilder (EWM con `com=13`, panda-nativo, sin TA-Lib).
 
 ---
 

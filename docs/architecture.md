@@ -10,9 +10,10 @@ Toda la lógica de negocio vive en el core; Freqtrade es solo un adaptador de en
 │              Freqtrade (framework)           │
 │                                             │
 │   OlibuguardStrategy (adaptador)            │
-│   ├── populate_indicators   (señales)       │
+│   ├── populate_indicators   (señales+ATR)   │
 │   ├── custom_stake_amount   (sizing)        │
-│   └── confirm_trade_entry   (decisión)      │
+│   ├── confirm_trade_entry   (decisión)      │
+│   └── custom_stoploss       (ATR dinámico)  │
 │                    │                        │
 └────────────────────┼────────────────────────┘
                      │ domain types
@@ -77,11 +78,11 @@ Modelos Pydantic para `AppConfig`, `RiskLimits`, `AIConfig`. Validación estrict
 ## Flujo de datos por vela
 
 ```
-Nueva vela 1h
+Nueva vela 5m
     │
     ▼
 populate_indicators()
-    Calcula EMA 20, EMA 50, RSI 14, volume_ratio
+    Calcula EMA 20, EMA 50, RSI 14, volume_ratio, ATR 14
     Genera señal: ema_cross_up = 1 si EMA20 > EMA50
     │
     ▼
@@ -98,6 +99,14 @@ confirm_trade_entry()
     2. AI Advisor → ¿veto? → False
     3. RiskGate.evaluate() → ¿aprobado? → True/False
     4. Audit: registra la decisión
+
+En paralelo, por cada posición abierta en cada nueva vela:
+    ▼
+custom_stoploss()
+    Lee ATR de la última vela analizada
+    stop_price = current_rate − ATR × 2
+    Devuelve stoploss relativo (nunca peor que −10%)
+    → Freqtrade sincroniza la orden stop en Binance (stoploss_on_exchange)
 ```
 
 ---
@@ -107,6 +116,7 @@ confirm_trade_entry()
 1. **Fail-safe**: cualquier componente opcional (AI, audit, alerts) que falle → el bot continúa.
 2. **Veto-only AI**: la IA solo puede rechazar, nunca iniciar ni ampliar.
 3. **Doble circuit breaker**: olibuguard (código) + Freqtrade (protections) como segunda red.
-4. **Sin claves en disco**: credenciales del exchange vía env vars; credenciales AWS via STS temporal.
-5. **Audit inmutable**: SQLite append-only, nunca se sobreescribe un registro.
-6. **Kill switch instantáneo**: fichero en disco, se comprueba antes de cada entrada.
+4. **Doble stoploss**: ATR dinámico por código (`custom_stoploss`) + orden stop en Binance (`stoploss_on_exchange`). Si el bot cae, Binance ejecuta el stop igualmente.
+5. **Sin claves en disco**: credenciales del exchange vía env vars; credenciales AWS via STS temporal.
+6. **Audit inmutable**: SQLite append-only, nunca se sobreescribe un registro.
+7. **Kill switch instantáneo**: fichero en disco, se comprueba antes de cada entrada.
