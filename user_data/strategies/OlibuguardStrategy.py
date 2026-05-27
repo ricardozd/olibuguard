@@ -160,6 +160,8 @@ class OlibuguardStrategy(IStrategy):
                     region=config.ai.region,
                     profile=config.ai.profile,
                     max_tokens=config.ai.max_tokens,
+                    thinking=config.ai.thinking,
+                    thinking_budget_tokens=config.ai.thinking_budget_tokens,
                     timeout_seconds=config.ai.timeout_seconds,
                 )
                 logger.info("bedrock_advisor_started: model=%s", config.ai.model)

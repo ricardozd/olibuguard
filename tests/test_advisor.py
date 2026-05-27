@@ -40,7 +40,18 @@ def _ctx() -> MarketContext:
 
 
 def _bedrock_response(veto: bool, reason: str = "") -> dict[str, Any]:
-    return {"content": [{"text": json.dumps({"veto": veto, "reason": reason})}]}
+    """Standard response (no thinking block)."""
+    return {"content": [{"type": "text", "text": json.dumps({"veto": veto, "reason": reason})}]}
+
+
+def _bedrock_thinking_response(veto: bool, reason: str = "") -> dict[str, Any]:
+    """Response with a thinking block prepended (extended thinking mode)."""
+    return {
+        "content": [
+            {"type": "thinking", "thinking": "Let me analyse the market context…"},
+            {"type": "text", "text": json.dumps({"veto": veto, "reason": reason})},
+        ]
+    }
 
 
 def _mock_client(response: dict[str, Any]) -> MagicMock:
@@ -126,8 +137,48 @@ def test_ai_config_bedrock_fields() -> None:
 
     cfg = AIConfig(enabled=True, provider="bedrock", model="test", region="eu-west-1")
     assert cfg.enabled
-    assert cfg.max_tokens == 256
-    assert cfg.timeout_seconds == pytest.approx(10.0)
+    assert cfg.max_tokens == 8192
+    assert cfg.timeout_seconds == pytest.approx(30.0)
+    assert not cfg.thinking
+    assert cfg.thinking_budget_tokens == 5000
+
+
+def test_ai_config_thinking_budget_must_be_less_than_max_tokens() -> None:
+    from olibuguard.config import AIConfig
+
+    with pytest.raises(ValidationError):
+        AIConfig(
+            enabled=True,
+            provider="bedrock",
+            model="test",
+            thinking=True,
+            max_tokens=1000,
+            thinking_budget_tokens=1000,  # equal → not strictly less
+        )
+    with pytest.raises(ValidationError):
+        AIConfig(
+            enabled=True,
+            provider="bedrock",
+            model="test",
+            thinking=True,
+            max_tokens=1000,
+            thinking_budget_tokens=2000,  # greater → invalid
+        )
+
+
+def test_ai_config_thinking_budget_valid_when_less() -> None:
+    from olibuguard.config import AIConfig
+
+    cfg = AIConfig(
+        enabled=True,
+        provider="bedrock",
+        model="test",
+        thinking=True,
+        max_tokens=8192,
+        thinking_budget_tokens=5000,
+    )
+    assert cfg.thinking
+    assert cfg.thinking_budget_tokens == 5000
 
 
 # ── BedrockAdvisor ────────────────────────────────────────────────────────────
@@ -163,7 +214,10 @@ def test_bedrock_advisor_no_veto_returns_none(fake_boto3: Any) -> None:
 
 def test_bedrock_advisor_invalid_json_returns_none(fake_boto3: Any) -> None:
     body = MagicMock()
-    body.read.return_value = json.dumps({"content": [{"text": "not json"}]}).encode()
+    # type=text so we reach the JSON-parse branch, not the no-text-block branch.
+    body.read.return_value = json.dumps(
+        {"content": [{"type": "text", "text": "not json"}]}
+    ).encode()
     client = MagicMock()
     client.invoke_model.return_value = {"body": body}
     fake_boto3.client.return_value = client
@@ -193,3 +247,69 @@ def test_bedrock_advisor_missing_boto3_raises() -> None:
         sys.modules.pop("olibuguard.advisor.bedrock", None)
         if saved is not None:
             sys.modules["boto3"] = saved
+
+
+# ── Extended thinking ─────────────────────────────────────────────────────────
+
+
+def test_bedrock_advisor_thinking_veto(fake_boto3: Any) -> None:
+    """Thinking response: veto=true inside the text block after the thinking block."""
+    fake_boto3.client.return_value = _mock_client(
+        _bedrock_thinking_response(veto=True, reason="sharp drop detected")
+    )
+    from olibuguard.advisor.bedrock import BedrockAdvisor
+
+    opinion = BedrockAdvisor(model_id="m", thinking=True).opinion(_ctx())
+    assert opinion is not None
+    assert opinion.bias == -1.0
+    assert "sharp drop" in opinion.rationale
+
+
+def test_bedrock_advisor_thinking_no_veto(fake_boto3: Any) -> None:
+    """Thinking response: veto=false → advisor abstains (returns None)."""
+    fake_boto3.client.return_value = _mock_client(
+        _bedrock_thinking_response(veto=False, reason="conditions normal")
+    )
+    from olibuguard.advisor.bedrock import BedrockAdvisor
+
+    assert BedrockAdvisor(model_id="m", thinking=True).opinion(_ctx()) is None
+
+
+def test_bedrock_advisor_thinking_block_ignored(fake_boto3: Any) -> None:
+    """Content that has only a thinking block (no text block) → abstain, not crash."""
+    body = MagicMock()
+    body.read.return_value = json.dumps(
+        {"content": [{"type": "thinking", "thinking": "some reasoning"}]}
+    ).encode()
+    client = MagicMock()
+    client.invoke_model.return_value = {"body": body}
+    fake_boto3.client.return_value = client
+    from olibuguard.advisor.bedrock import BedrockAdvisor
+
+    assert BedrockAdvisor(model_id="m", thinking=True).opinion(_ctx()) is None
+
+
+def test_bedrock_advisor_thinking_request_includes_budget(fake_boto3: Any) -> None:
+    """When thinking=True, invoke_model is called with the thinking block in the body."""
+    fake_boto3.client.return_value = _mock_client(
+        _bedrock_thinking_response(veto=False)
+    )
+    from olibuguard.advisor.bedrock import BedrockAdvisor
+
+    BedrockAdvisor(model_id="m", thinking=True, thinking_budget_tokens=2000).opinion(_ctx())
+
+    call_kwargs = fake_boto3.client.return_value.invoke_model.call_args
+    sent_body: dict[str, Any] = json.loads(call_kwargs.kwargs["body"])
+    assert sent_body.get("thinking") == {"type": "enabled", "budget_tokens": 2000}
+
+
+def test_bedrock_advisor_no_thinking_request_omits_budget(fake_boto3: Any) -> None:
+    """When thinking=False, the thinking key must not appear in the request body."""
+    fake_boto3.client.return_value = _mock_client(_bedrock_response(veto=False))
+    from olibuguard.advisor.bedrock import BedrockAdvisor
+
+    BedrockAdvisor(model_id="m", thinking=False).opinion(_ctx())
+
+    call_kwargs = fake_boto3.client.return_value.invoke_model.call_args
+    sent_body: dict[str, Any] = json.loads(call_kwargs.kwargs["body"])
+    assert "thinking" not in sent_body

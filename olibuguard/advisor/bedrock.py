@@ -27,8 +27,14 @@ _logger = logging.getLogger(__name__)
 _SYSTEM = (
     "You are a conservative risk advisor for a crypto trading bot. "
     "Your only role is to veto trades with extreme, objective red flags. "
+    "Think step by step: check for price anomalies, abnormal volume, equity stress, "
+    "and whether the market context is clearly dangerous or anomalous. "
     "When in doubt do NOT veto — a missed bad trade is better than a false veto "
-    "that blocks a good one. Respond with JSON only, nothing else."
+    "that blocks a good one. "
+    "After your analysis output a single JSON object and nothing else:\n"
+    '{"veto": false, "reason": "brief explanation"}\n'
+    "or\n"
+    '{"veto": true, "reason": "specific red flag observed"}'
 )
 
 _USER_TEMPLATE = """\
@@ -62,10 +68,12 @@ class BedrockAdvisor:
     def __init__(
         self,
         model_id: str,
-        region: str = "us-east-1",
+        region: str = "eu-west-1",
         profile: str | None = None,
-        max_tokens: int = 256,
-        timeout_seconds: float = 10.0,
+        max_tokens: int = 8192,
+        thinking: bool = False,
+        thinking_budget_tokens: int = 5000,
+        timeout_seconds: float = 30.0,
     ) -> None:
         try:
             import boto3
@@ -84,6 +92,8 @@ class BedrockAdvisor:
             ) from exc
         self._model_id = model_id
         self._max_tokens = max_tokens
+        self._thinking = thinking
+        self._thinking_budget = thinking_budget_tokens
         self._timeout = timeout_seconds
 
     def opinion(self, context: MarketContext) -> AdvisorOpinion | None:
@@ -110,22 +120,37 @@ class BedrockAdvisor:
             equity=context.indicators.get("equity", 0.0),
             drawdown_pct=context.indicators.get("drawdown_pct", 0.0),
         )
-        body = json.dumps(
-            {
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": self._max_tokens,
-                "system": _SYSTEM,
-                "messages": [{"role": "user", "content": prompt}],
+        body_dict: dict[str, Any] = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": self._max_tokens,
+            "system": _SYSTEM,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if self._thinking:
+            # Extended thinking: Claude reasons step-by-step before the verdict.
+            # budget_tokens < max_tokens is enforced by AIConfig validator.
+            body_dict["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": self._thinking_budget,
             }
-        )
         response = self._client.invoke_model(
             modelId=self._model_id,
             contentType="application/json",
             accept="application/json",
-            body=body,
+            body=json.dumps(body_dict),
         )
         raw: dict[str, Any] = json.loads(response["body"].read())
-        text: str = raw["content"][0]["text"].strip()
+        # Thinking responses include a {"type": "thinking", ...} block before the
+        # text block.  Find the text block by type rather than by index so the
+        # same code path works with and without thinking enabled.
+        text_block = next(
+            (b for b in raw.get("content", []) if b.get("type") == "text"),
+            None,
+        )
+        if text_block is None:
+            _logger.warning("bedrock_advisor.no_text_block — abstaining")
+            return None
+        text: str = text_block["text"].strip()
         try:
             parsed: dict[str, Any] = json.loads(text)
         except json.JSONDecodeError:

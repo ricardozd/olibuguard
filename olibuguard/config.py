@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class RiskLimits(BaseModel):
@@ -39,14 +39,28 @@ class AIConfig(BaseModel):
 
     enabled: bool = False
     provider: Literal["null", "bedrock"] = "null"
-    model: str = "anthropic.claude-3-haiku-20240307-v1:0"
+    # Cross-region inference profile (eu.anthropic.*) or base model ARN.
+    model: str = "eu.anthropic.claude-opus-4-7"
     weight: float = Field(default=0.0, ge=0.0, le=1.0)
-    region: str = "us-east-1"
+    region: str = "eu-west-1"
     # Named AWS profile from ~/.aws/config (role-based auth, no static keys).
     # Leave None to let boto3 use the default credential chain.
     profile: str | None = None
-    max_tokens: int = Field(default=256, gt=0)
-    timeout_seconds: float = Field(default=10.0, gt=0)
+    max_tokens: int = Field(default=8192, gt=0)
+    # Extended thinking: Claude reasons step-by-step before producing the verdict.
+    # budget_tokens must be strictly less than max_tokens.
+    thinking: bool = False
+    thinking_budget_tokens: int = Field(default=5000, gt=0)
+    timeout_seconds: float = Field(default=30.0, gt=0)
+
+    @model_validator(mode="after")
+    def _thinking_budget_fits(self) -> AIConfig:
+        if self.thinking and self.thinking_budget_tokens >= self.max_tokens:
+            raise ValueError(
+                f"thinking_budget_tokens ({self.thinking_budget_tokens}) "
+                f"must be less than max_tokens ({self.max_tokens})"
+            )
+        return self
 
 
 class ExchangeConfig(BaseModel):
