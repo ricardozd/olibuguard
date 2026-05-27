@@ -52,6 +52,13 @@
             "method": "StaticPairList"
         }
     ],
+    "order_types": {
+        "entry": "limit",
+        "exit": "limit",
+        "stoploss": "market",
+        "stoploss_on_exchange": true,
+        "stoploss_on_exchange_interval": 60
+    },
     "fee": 0.001,
     "telegram": {
         "enabled": false,

@@ -34,7 +34,7 @@ from typing import Any
 from pandas import DataFrame
 
 from freqtrade.persistence import Trade
-from freqtrade.strategy import IStrategy
+from freqtrade.strategy import IStrategy, stoploss_from_absolute
 
 from olibuguard.advisor.base import AIAdvisor, NullAdvisor, clamp_advisor_factor
 from olibuguard.alerts.sink import AlertSink, NullAlertSink
@@ -56,10 +56,15 @@ class OlibuguardStrategy(IStrategy):
 
     timeframe = "15m"
     can_short = False
-    stoploss = -0.10
+    stoploss = -0.10          # hard floor: Freqtrade enforces this even if ATR says wider
+    use_custom_stoploss = True
     minimal_roi = {"0": 0.10}
     process_only_new_candles = True
     startup_candle_count = 50  # EMA50 needs 50 candles = ~12 h of 15m data
+
+    # ATR stoploss multiplier: stop = entry - ATR(14) × multiplier.
+    # 2.0 gives room for normal noise; tighten to 1.5 in ranging markets.
+    ATR_MULTIPLIER = 2.0
 
     @property
     def protections(self) -> list[dict[str, Any]]:
@@ -383,6 +388,16 @@ class OlibuguardStrategy(IStrategy):
         vol_avg = dataframe["volume"].rolling(20, min_periods=1).mean()
         dataframe["volume_ratio"] = (dataframe["volume"] / vol_avg.where(vol_avg > 0)).fillna(1.0)
 
+        # ATR 14 — Wilder's EWM (pandas-native, no TA-Lib).
+        # True Range = max(high-low, |high-prev_close|, |low-prev_close|)
+        prev_close = dataframe["close"].shift(1)
+        tr = (
+            (dataframe["high"] - dataframe["low"])
+            .combine(abs(dataframe["high"] - prev_close), max)
+            .combine(abs(dataframe["low"] - prev_close), max)
+        )
+        dataframe["atr"] = tr.ewm(com=13, adjust=False).mean()
+
         return dataframe
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict[str, Any]) -> DataFrame:
@@ -396,6 +411,35 @@ class OlibuguardStrategy(IStrategy):
         crossed_down = (fast < slow) & (fast.shift(1) >= slow.shift(1))
         dataframe.loc[crossed_down, "exit_long"] = 1
         return dataframe
+
+    def custom_stoploss(
+        self,
+        pair: str,
+        trade: Trade,
+        current_time: datetime,
+        current_rate: float,
+        current_profit: float,
+        **kwargs: Any,
+    ) -> float:
+        """ATR-based dynamic stoploss: stop = current_rate - ATR(14) × ATR_MULTIPLIER.
+
+        Falls back to the static -10% floor if ATR data is unavailable (fail-safe).
+        The hard `stoploss = -0.10` class attribute acts as an absolute ceiling so
+        the ATR stop can never exceed -10% from entry.
+        """
+        dp = self.dp
+        if dp is None:
+            return self.stoploss  # fail-safe: no data provider in tests
+        dataframe, _ = dp.get_analyzed_dataframe(pair, self.timeframe)
+        if dataframe is None or dataframe.empty or "atr" not in dataframe.columns:
+            return self.stoploss  # fail-safe: missing ATR
+
+        atr = float(dataframe["atr"].iloc[-1])
+        if atr <= 0:
+            return self.stoploss  # fail-safe: bad ATR value
+
+        stop_price = current_rate - atr * self.ATR_MULTIPLIER
+        return stoploss_from_absolute(stop_price, current_rate, is_short=trade.is_short)
 
     def custom_stake_amount(
         self,
