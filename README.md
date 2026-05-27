@@ -1,118 +1,209 @@
 # olibuguard
 
-Bot de trading de criptomonedas para correr en local, con la **seguridad y los guardarraíles por delante de la velocidad de desarrollo**. Es un proyecto personal de aprendizaje: el objetivo de la fase 1 no es ganar dinero, sino tener una pieza de software auditable, robusta y segura que opere en *paper trading* durante meses antes de plantearse capital real.
+Personal crypto trading bot — **security and guardrails first, development speed second**.
 
-> Documento de diseño completo y vivo: [`docs/diseno.md`](docs/diseno.md).
+Built on Freqtrade (Path A) as a personal learning project. The goal of Phase 1 is not to make
+money but to produce an auditable, robust, and safe piece of software that runs in *paper trading*
+for months before any real capital is risked.
 
-## Estado
+> Living design document: [`docs/design.md`](docs/design.md)
 
-- **Fase 0 (setup):** ✅ completa — tooling, esqueleto hexagonal, guardarraíles base, smoke test.
-- **Fase 1 (backtest end-to-end):** 🔶 arrancada — integración con Freqtrade (Camino A) y backtest reproducible con la estrategia de ejemplo EMA20/50.
-- **Fases 2–4** (paper trading prolongado, IA opcional, live con cap mínimo): pendientes. Ver roadmap en el doc de diseño.
+---
 
-## Filosofía y guardarraíles
+## Status
 
-- **Tres modos separados y excluyentes:** `backtest`, `paper` (dry-run, por defecto), `live`. El modo se fija al arrancar; pasar a `live` exige un flag de confirmación explícito (`--i-understand-this-is-real-money`).
-- **Risk gate invariante:** la estrategia *propone*, el risk gate *dispone*. Antes de cada orden aplica:
-  - Sizing dinámico como **% del capital** (`max_risk_per_trade_pct`) + caps absolutos.
-  - **Circuit breakers**: límite de pérdida diaria y drawdown desde el pico de equity.
-  - Guard de **slippage**, whitelist/blacklist de pares, máximo de órdenes por minuto y mínimo nocional.
-- **Kill-switch en runtime** vía `protections` de Freqtrade (MaxDrawdown, StoplossGuard, CooldownPeriod), como segunda red.
-- **IA desenchufable:** `NullAdvisor` por defecto; el advisor solo puede **vetar o reducir** una operación, nunca agrandarla.
-- **Secretos fuera del código:** `keyring` + `.env` (`python-dotenv`). Nunca claves en el repo.
+| Phase | Description | State |
+|-------|-------------|-------|
+| **0 – Setup** | Hexagonal skeleton, tooling, smoke test, base guardrails | ✅ complete |
+| **1 – Backtest** | Freqtrade integration (Path A), reproducible EMA 20/50 backtest | ✅ complete |
+| **2 – Safety layer** | Full guardrail stack (A–G): circuit breakers, audit DB, kill-switch, reconciliation, fail-safe error budget, Telegram alerts | ✅ complete |
+| **3 – Optional AI** | AWS Bedrock `AIAdvisor` behind feature flag | ⏳ pending |
+| **4 – Live (min. capital)** | Only after ≥ 4 weeks of clean paper trading | ⏳ pending |
 
-## Arquitectura (hexagonal)
+**Next milestone**: 4-week paper-trading window (Freqtrade dry-run against live Binance market data).
 
-El núcleo `olibuguard.*` no conoce el exchange ni Freqtrade. Freqtrade es el *runner* (conexión a exchange, dry-run, backtesting, persistencia) y una clase adaptadora (`OlibuguardStrategy`) delega en el núcleo: las señales salen de la estrategia, y el risk gate se engancha en `custom_stake_amount` (dimensionado) y `confirm_trade_entry` (veto). Así se mantiene la opción de migrar fuera de Freqtrade.
+---
+
+## Core philosophy
+
+- **Three hard-separated modes**: `backtest`, `paper` (dry-run, default), `live`.
+  Mode is fixed at startup; switching to `live` requires the explicit flag
+  `--i-understand-this-is-real-money`.
+- **Invariant risk gate**: the strategy *proposes*, the risk gate *decides*.
+  Every order passes through: dynamic sizing as % of equity, circuit breakers (drawdown + daily
+  loss), slippage guard, pair whitelist/blacklist, order-rate limit, and minimum notional.
+- **Pluggable AI**: `NullAdvisor` by default; the advisor can only **veto or reduce** a trade,
+  never initiate or enlarge it.
+- **Secrets outside code**: `keyring` + `.env` via `python-dotenv`. Keys never in the repo.
+
+---
+
+## Phase 2 safety layers (all implemented)
+
+| Layer | What it does | Key files |
+|-------|--------------|-----------|
+| **A – Circuit breakers** | `PortfolioState` fed with real equity, peak, and daily PnL; drawdown + daily-loss trips halt new entries | `risk/gate.py`, `OlibuguardStrategy.py` |
+| **B – Audit DB** | Every risk-gate decision persisted to a separate SQLite DB (SQLAlchemy 2, Decimal-safe TEXT columns) | `audit/` |
+| **C – Equity curve** | Periodic equity snapshot written to the audit DB on every candle | `audit/sqlite.py` |
+| **D – Kill switch** | File sentinel `user_data/KILL_SWITCH`; `task kill / task resume`; auto-activated by error budget | `kill_switch.py`, `cli.py` |
+| **E – Reconciliation** | Peak equity restored from audit DB at startup so the drawdown circuit breaker survives restarts; >5% intra-candle drift triggers a warning | `reconciliation.py`, `audit/sink.py` |
+| **F – Fail-safe error budget** | `run_safe` wraps every external call; `ErrorBudget` auto-activates the kill switch after 5 consecutive wallet-read failures | `failsafe.py` |
+| **G – Telegram alerts** | Startup notice, circuit-breaker trips, equity drift, error-budget exhaustion; stdlib `urllib`, zero new deps | `alerts/` |
+
+---
+
+## Architecture (hexagonal)
+
+The `olibuguard.*` core has no knowledge of Freqtrade or any exchange. Freqtrade is the *runner*
+(exchange connectivity, dry-run, backtesting, persistence). `OlibuguardStrategy` is a thin adapter
+that translates between Freqtrade's float world and the core's `Decimal` domain, wiring the risk
+gate into `custom_stake_amount` (sizing) and `confirm_trade_entry` (veto). If you ever need to
+migrate off Freqtrade, only the adapter changes.
 
 ```
-olibuguard/                  # repo (el proyecto)
-├── Taskfile.yml             # task runner (interfaz sobre uv)
-├── pyproject.toml           # uv, dependencias, ruff, mypy --strict, pytest
-├── olibuguard/              # paquete Python (núcleo, agnóstico a Freqtrade)
-│   ├── cli.py               # CLI: smoke, run (modos + confirmación live)
-│   ├── config.py            # config con pydantic (RiskLimits, AIConfig, ...)
-│   ├── modes.py             # Mode: backtest | paper | live
-│   ├── logging.py           # logging estructurado (structlog)
-│   ├── secrets.py           # acceso a secretos vía keyring
-│   ├── orchestrator.py      # loop: market data -> strategy -> risk gate -> order mgr
-│   ├── domain/              # models.py (tipos) + ports.py (interfaces Protocol)
-│   ├── risk/                # gate.py (el risk gate invariante)
-│   └── advisor/             # base.py (AIAdvisor + NullAdvisor por defecto)
-├── user_data/               # Freqtrade
-│   ├── config.json          # config de Freqtrade (dry-run, pares, fees, alertas)
-│   └── strategies/OlibuguardStrategy.py   # adaptador IStrategy -> núcleo
-├── tests/                   # pytest (+ hypothesis para el risk gate)
-├── docs/diseno.md           # documento de diseño vivo
-├── .skills/                 # rúbrica de auditoría del proyecto
-├── Dockerfile               # imagen de despliegue (Freqtrade + olibuguard)
-├── docker-compose.yml       # demonio dry-run 24/7
-├── config.example.yaml      # plantilla de config del núcleo
-└── .env.example             # plantilla de secretos (copiar a .env)
+olibuguard/                      # repo root
+├── Taskfile.yml                 # task runner (thin wrapper over uv)
+├── pyproject.toml               # uv, deps, ruff, mypy --strict, pytest
+│
+├── olibuguard/                  # Python package — core (Freqtrade-agnostic)
+│   ├── alerts/                  # AlertSink Protocol · NullAlertSink · TelegramAlertSink
+│   ├── audit/                   # DecisionAudit · EquityPoint · AuditSink · AuditReader · SQLiteAuditSink
+│   ├── advisor/                 # AIAdvisor Protocol · NullAdvisor (default)
+│   ├── domain/                  # OrderIntent · PortfolioState · RiskVerdict · Side
+│   ├── risk/                    # RiskGate — the invariant safety core
+│   ├── cli.py                   # CLI: smoke · run · kill · resume
+│   ├── config.py                # AppConfig · RiskLimits (pydantic)
+│   ├── failsafe.py              # run_safe[T] · ErrorBudget
+│   ├── kill_switch.py           # KillSwitch — file-based sentinel
+│   ├── logging.py               # structured logging (structlog)
+│   ├── modes.py                 # Mode enum: backtest | paper | live
+│   ├── orchestrator.py          # main loop skeleton
+│   ├── reconciliation.py        # restore_peak_equity · check_equity_drift
+│   └── secrets.py               # keyring-backed secret access
+│
+├── user_data/                   # Freqtrade workspace
+│   ├── config.json              # Freqtrade config (dry-run, pairs, fees, protections)
+│   └── strategies/
+│       └── OlibuguardStrategy.py  # IStrategy adapter → olibuguard core
+│
+├── tests/                       # pytest + hypothesis (76 tests)
+├── docs/design.md               # living design document
+├── .skills/                     # project audit rubric
+├── Dockerfile                   # deployment image (Freqtrade + olibuguard)
+├── docker-compose.yml           # 24/7 dry-run daemon
+├── config.example.yaml          # core config template (copy → config.yaml)
+└── .env.example                 # secrets template  (copy → .env)
 ```
 
-## Requisitos
+---
 
-- Python 3.12+ (lo resuelve `uv`).
-- [`uv`](https://docs.astral.sh/uv/) gestiona el entorno y las dependencias (mantiene `uv.lock`).
-- [`Task`](https://taskfile.dev) (go-task) como *task runner* — `brew install go-task`.
-- TA-Lib (librería de sistema) para Freqtrade.
+## Requirements
 
-## Instalación (nativa)
+| Tool | Version | Purpose |
+|------|---------|---------|
+| Python | 3.12+ | resolved automatically by `uv` |
+| [`uv`](https://docs.astral.sh/uv/) | latest | environment + dependency manager (`uv.lock`) |
+| [`Task`](https://taskfile.dev) | 3.50+ | task runner — `brew install go-task` |
+| TA-Lib | system lib | required by Freqtrade |
 
-`Task` orquesta a `uv` por debajo; uv sigue siendo el gestor de dependencias.
+---
+
+## Installation
+
+`task` orchestrates `uv` underneath; `uv` remains the dependency manager and lock-file owner.
 
 **macOS (Apple Silicon):**
-
 ```bash
-brew install ta-lib   # librería de sistema requerida por Freqtrade
-task install          # = uv sync --extra freqtrade (con las rutas de TA-Lib ya puestas)
+brew install ta-lib go-task
+task install          # uv sync --extra freqtrade with TA-Lib paths pre-set
 ```
 
-**Windows:** instalar las "VC++ Build Tools" (Desktop development with C++) y luego `task install`.
+**Windows:** install *Desktop development with C++* from the VC++ Build Tools, then `task install`.
 
-**Solo el núcleo** (sin Freqtrade): `uv sync`.
+**Core only** (no Freqtrade, no TA-Lib): `uv sync`
 
-## Uso
+---
 
-Ejecuta `task` para ver todas las tareas. Cada tarea llama a `uv` por debajo.
+## Commands
 
-**Calidad de código:**
+Run `task` to list all available tasks.
 
+**Quality gate:**
 ```bash
-task check        # lint + typecheck + tests (el gate completo)
-task lint         # ruff
-task typecheck    # mypy --strict
-task test         # pytest (incluye property-based del risk gate)
+task check        # lint + typecheck + tests (full gate — must stay green)
+task lint         # ruff check
+task typecheck    # mypy --strict (32 source files)
+task test         # pytest (76 tests, includes hypothesis property-based)
 ```
 
 **CLI:**
-
 ```bash
-task smoke                                      # lee config y auto-chequea el risk gate
-task run -- --mode paper                        # arranca en paper (dry-run)
-task run -- --mode live --i-understand-this-is-real-money   # live exige confirmación
+task smoke                                             # read config + self-check the risk gate
+task run -- --mode paper                               # start in paper (dry-run)
+task run -- --mode live --i-understand-this-is-real-money   # live requires explicit confirmation
 ```
 
-**Backtest con Freqtrade:**
+**Kill switch:**
+```bash
+task kill                          # activate — bot stops opening new positions immediately
+task kill -- --reason "suspicious" # with a reason recorded in the sentinel file
+task resume                        # deactivate — bot resumes on the next candle
+```
 
+**Freqtrade backtest:**
 ```bash
 task download -- --timerange 20250101-20250401
 task backtest -- --timerange 20250101-20250401
 ```
 
-**Docker (despliegue dry-run 24/7):**
-
+**Docker (24/7 dry-run daemon):**
 ```bash
 docker compose up --build -d
 ```
 
-## Configuración
+---
 
-- `config.example.yaml` → copiar a `config.yaml` (config del núcleo: límites de riesgo e IA).
-- `.env.example` → copiar a `.env` (secretos; está en `.gitignore`).
-- `user_data/config.json` → config de Freqtrade (dry-run, pares, fees, protections, alertas Telegram).
+## Configuration
 
-## Estándares del proyecto (`.skills/`)
+### Core config (`config.example.yaml` → `config.yaml`)
+Risk limits and AI settings for the olibuguard core. Copy and adjust:
+```bash
+cp config.example.yaml config.yaml
+```
 
-El código se audita estrictamente contra las reglas en `.skills/`: protección de capital (CRO), Python senior cuantitativo, backtesting riguroso, DevSecOps y estándares bilingües (código en inglés, comunicación en español).
+### Secrets (`.env.example` → `.env`)
+Never commit `.env`. It is listed in `.gitignore`.
+```bash
+cp .env.example .env   # then fill in your values
+```
+
+### Freqtrade config (`user_data/config.json`)
+Pairs, fees, protections, Freqtrade API server settings. Already configured for dry-run with
+BTC/USDT + ETH/USDT on the 1h timeframe.
+
+### Telegram alerts (optional)
+Set two environment variables (in `.env` or system env):
+```bash
+TELEGRAM_BOT_TOKEN=<token from @BotFather>
+TELEGRAM_CHAT_ID=<your chat ID>
+```
+When present, the bot sends a startup notice, circuit-breaker trips, equity drift warnings,
+and error-budget exhaustion alerts. No extra dependencies — uses stdlib `urllib`.
+
+---
+
+## Project standards (`.skills/`)
+
+Code is audited against five rubrics in `.skills/`:
+
+| Rubric | Enforces |
+|--------|----------|
+| `trading_guardrails.md` | Capital protection (CRO mindset): position sizing, circuit breakers, kill-switch, simulation mode |
+| `senior_python_dev.md` | Production-quality Python: strict typing, error handling, structured logging, vectorised data ops |
+| `backtesting_specialist.md` | Zero look-ahead bias, real costs (fees + slippage), professional metrics (Sharpe, Sortino, max drawdown) |
+| `security_devops.md` | Secret management, state persistence, containerisation, health checks |
+| `language_standards.md` | All code, docs, logs, and comments in English |
+
+**Tooling invariants**: `ruff` (lint + format), `mypy --strict` (type checking), `pytest` +
+`hypothesis` (tests), `uv` (deps), `task` (runner). CI gate: `task check` must be green before
+every commit.

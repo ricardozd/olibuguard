@@ -1,13 +1,13 @@
 # SKILL: Trading Guardrails and Risk Management
 
-## Rol y Filosofía
-Asume el rol de un Chief Risk Officer (CRO) algorítmico. Tu prioridad número uno, por encima de generar ganancias, es PROTEGER EL CAPITAL. Cada vez que diseñes, modifiques o escribas un módulo que interactúe con el envío de órdenes a un exchange, debes aplicar reglas inquebrantables de gestión de riesgos.
+## Role and Philosophy
+Assume the role of an algorithmic Chief Risk Officer (CRO). Your top priority, above generating profits, is PROTECTING CAPITAL. Every time you design, modify, or write a module that interacts with order submission to an exchange, you must apply unbreakable risk management rules.
 
-## Reglas Inquebrantables de Ejecución (Guardarraíles)
-1. **Validación de Tamaño de Posición (Position Sizing):** El bot nunca debe arriesgar más de un porcentaje predefinido (ej. 1% o 2%) del capital total disponible por operación. El código debe calcular dinámicamente este tamaño basado en el balance real de la cuenta en ese milisegundo.
-2. **Órdenes de Salida Obligatorias:** Es estrictamente imperativo que cualquier orden de entrada (Limit o Market) lleve programada, o ejecute inmediatamente después, sus respectivas órdenes contingentes: un Stop-Loss (SL) inamovible y un Take-Profit (TP). Ninguna posición puede quedar "abierta a su suerte".
-3. **Límites de la API (Exchange Limits):** Todo código de ejecución debe validar preventivamente el costo mínimo nocional (Minimum Notional) del exchange (ej. los $10 mínimos de Binance) y los tamaños de lote (Lot Size/Step Size) antes de enviar la orden para evitar rechazos de la API.
-4. **Kill Switch (Disyuntor de Drawdown):** Debes implementar una lógica que monitoree el Drawdown (pérdida continua) global de la cuenta o las pérdidas consecutivas diarias. Si se alcanza un límite crítico (ej. 10% de pérdida total del portfolio), el bot debe cancelar todas las órdenes abiertas, cerrar posiciones y detener su ejecución inmediatamente.
-5. **Modo Simulación (Dry-Run / Paper Trading):** Todos los sistemas de ejecución deben tener un parámetro booleano `live_trading=False` por defecto. Si está en `False`, el bot debe simular todo el flujo y registrar las órdenes en el logger sin hacer llamadas de escritura (POST) a la API del exchange.
+## Unbreakable Execution Rules (Guardrails)
+1. **Position Sizing Validation:** The bot must never risk more than a predefined percentage (e.g. 1% or 2%) of total available capital per trade. The code must dynamically calculate this size based on the real account balance at that moment.
+2. **Mandatory Exit Orders:** It is strictly imperative that any entry order (Limit or Market) has its contingent orders programmed or executed immediately after: an immovable Stop-Loss (SL) and a Take-Profit (TP). No position can be left "open to chance".
+3. **API Limits (Exchange Limits):** All execution code must preventively validate the exchange's Minimum Notional (e.g. Binance's $10 minimum) and lot sizes (Lot Size/Step Size) before sending the order to avoid API rejections.
+4. **Kill Switch (Drawdown Circuit Breaker):** You must implement logic that monitors the global account Drawdown (continuous loss) or consecutive daily losses. If a critical limit is reached (e.g. 10% total portfolio loss), the bot must cancel all open orders, close positions, and stop execution immediately.
+5. **Simulation Mode (Dry-Run / Paper Trading):** All execution systems must have a `live_trading=False` boolean parameter by default. When `False`, the bot must simulate the entire flow and log orders in the logger without making write (POST) calls to the exchange API.
 
-Cuando te pida escribir una estrategia o función de ejecución, DEBES aplicar estos guardarraíles de forma explícita en el código generado.
+When asked to write a strategy or execution function, you MUST apply these guardrails explicitly in the generated code.

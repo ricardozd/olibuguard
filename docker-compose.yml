@@ -1,6 +1,6 @@
-# Despliegue del bot en dry-run (paper) como demonio 24/7.
-# Secretos vía .env (opcional en paper/backtest; obligatorio en live). NUNCA en el repo.
-# Para live: poner dry_run=false en config.json y exportar FREQTRADE__EXCHANGE__KEY/SECRET.
+# Deploy the bot in dry-run (paper) mode as a 24/7 daemon.
+# Secrets via .env (optional for paper/backtest; mandatory for live). NEVER commit .env.
+# For live: set dry_run=false in config.json and export FREQTRADE__EXCHANGE__KEY/SECRET.
 services:
   olibuguard:
     build:
@@ -14,8 +14,8 @@ services:
         required: false
     volumes:
       - "./user_data:/freqtrade/user_data"
-    # api_server está deshabilitado por defecto; si lo activas para health checks,
-    # expón el puerto solo en loopback:
+    # api_server is disabled by default; if you enable it for health checks,
+    # expose the port on loopback only:
     # ports:
     #   - "127.0.0.1:8080:8080"
     command: >
