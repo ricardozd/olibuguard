@@ -1,0 +1,77 @@
+# Task runner (https://taskfile.dev). Thin interface over uv, which stays as the
+# dependency manager (keeps uv.lock and reproducibility). Run `task` to list tasks.
+version: "3"
+
+vars:
+  USERDIR: user_data
+  FT_CONFIG: user_data/config.json
+  STRATEGY: OlibuguardStrategy
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+    silent: true
+
+  install:
+    desc: Install dependencies (core + freqtrade) into the uv venv
+    # TA-Lib (system lib) build paths for macOS/Homebrew, needed to build the
+    # ta-lib wheel. On Windows install the VC++ Build Tools instead (see README).
+    env:
+      TA_INCLUDE_PATH: /opt/homebrew/opt/ta-lib/include
+      TA_LIBRARY_PATH: /opt/homebrew/opt/ta-lib/lib
+      PKG_CONFIG_PATH: /opt/homebrew/opt/ta-lib/lib/pkgconfig
+    cmds:
+      - uv sync --extra freqtrade
+
+  lint:
+    desc: Lint with ruff
+    cmds:
+      - uv run ruff check .
+
+  format:
+    desc: Format with ruff
+    cmds:
+      - uv run ruff format .
+
+  typecheck:
+    desc: Type-check with mypy (strict)
+    cmds:
+      - uv run mypy
+
+  test:
+    desc: Run the test suite (pytest + hypothesis)
+    cmds:
+      - uv run pytest
+
+  check:
+    desc: Run lint, typecheck and tests (the full gate)
+    cmds:
+      - task: lint
+      - task: typecheck
+      - task: test
+
+  smoke:
+    desc: CLI smoke — read config and self-check the risk gate
+    cmds:
+      - uv run olibuguard smoke
+
+  run:
+    desc: 'Run the bot, e.g. `task run -- --mode paper`'
+    cmds:
+      - uv run olibuguard run {{.CLI_ARGS}}
+
+  download:
+    desc: 'Download OHLCV, e.g. `task download -- --timerange 20250101-20250401`'
+    cmds:
+      - >-
+        uv run freqtrade download-data --userdir {{.USERDIR}} --config {{.FT_CONFIG}}
+        --pairs BTC/USDT ETH/USDT --timeframes 1h {{.CLI_ARGS}}
+
+  backtest:
+    desc: 'Backtest, e.g. `task backtest -- --timerange 20250101-20250401`'
+    cmds:
+      - >-
+        uv run freqtrade backtesting --userdir {{.USERDIR}} --config {{.FT_CONFIG}}
+        --strategy {{.STRATEGY}} --enable-protections {{.CLI_ARGS}}

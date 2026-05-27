@@ -273,6 +273,20 @@ Esto permite reproducir cualquier operación post-mortem. Es la base para mejora
 - Test de integración: backtest sobre 1 año de datos históricos como parte de CI local.
 - Smoke test antes de cada arranque: el bot lee config, conecta al exchange, verifica que puede leer balances y velas, comprueba que `risk_gate` rechaza un par de órdenes inválidas (test interno) y solo entonces empieza a operar.
 
+### 5.9 Realidad de ejecución (fricción de mercado)
+
+Consejos para que lo rentable en backtest no se evapore en real. Leyenda: ✅ hecho · 🔶 parcial · ⏳ Fase 2 · 🔌 lo cubre Freqtrade.
+
+- **Comisiones (maker/taker):** órdenes límite (maker) por defecto + `fee` explícito en `config.json`. ✅ · 🔶 pendiente umbral de "ganadora neta de fees" al bajar de timeframe.
+- **Spread (bid/ask):** Freqtrade cotiza contra el order book (`use_order_book`), no contra el `close`. ✅
+- **Slippage:** guard en el risk gate (`max_slippage_pct`). ✅
+- **Sincronización de reloj:** `adjustForTimeDifference` activado en `ccxt_config` (peticiones firmadas). ✅ · mantener NTP en el SO es responsabilidad de despliegue. 🔶
+- **WebSockets / rate limits:** los gestiona Freqtrade. 🔌
+- **Reconexión sin órdenes duplicadas:** Freqtrade reconecta y persiste; reconciliación propia al arranque → Fase 2. ⏳
+- **Pares líquidos:** whitelist BTC/USDT, ETH/USDT. ✅
+- **Velas cerradas (sin look-ahead):** `process_only_new_candles` + cruce con `shift(1)`. ✅
+- **Paper trading prolongado (2–4 semanas):** criterio de salida de la Fase 2. ⏳
+
 ---
 
 ## 6. Persistencia

@@ -27,6 +27,8 @@ El núcleo `olibuguard.*` no conoce el exchange ni Freqtrade. Freqtrade es el *r
 
 ```
 olibuguard/                  # repo (el proyecto)
+├── Taskfile.yml             # task runner (interfaz sobre uv)
+├── pyproject.toml           # uv, dependencias, ruff, mypy --strict, pytest
 ├── olibuguard/              # paquete Python (núcleo, agnóstico a Freqtrade)
 │   ├── cli.py               # CLI: smoke, run (modos + confirmación live)
 │   ├── config.py            # config con pydantic (RiskLimits, AIConfig, ...)
@@ -43,7 +45,6 @@ olibuguard/                  # repo (el proyecto)
 ├── tests/                   # pytest (+ hypothesis para el risk gate)
 ├── docs/diseno.md           # documento de diseño vivo
 ├── .skills/                 # rúbrica de auditoría del proyecto
-├── pyproject.toml           # uv, dependencias, ruff, mypy --strict, pytest
 ├── Dockerfile               # imagen de despliegue (Freqtrade + olibuguard)
 ├── docker-compose.yml       # demonio dry-run 24/7
 ├── config.example.yaml      # plantilla de config del núcleo
@@ -53,51 +54,51 @@ olibuguard/                  # repo (el proyecto)
 ## Requisitos
 
 - Python 3.12+ (lo resuelve `uv`).
-- [`uv`](https://docs.astral.sh/uv/) para gestionar el entorno y las dependencias.
+- [`uv`](https://docs.astral.sh/uv/) gestiona el entorno y las dependencias (mantiene `uv.lock`).
+- [`Task`](https://taskfile.dev) (go-task) como *task runner* — `brew install go-task`.
 - TA-Lib (librería de sistema) para Freqtrade.
 
 ## Instalación (nativa)
 
+`Task` orquesta a `uv` por debajo; uv sigue siendo el gestor de dependencias.
+
 **macOS (Apple Silicon):**
 
 ```bash
-brew install ta-lib
-export TA_INCLUDE_PATH=/opt/homebrew/opt/ta-lib/include
-export TA_LIBRARY_PATH=/opt/homebrew/opt/ta-lib/lib
-export PKG_CONFIG_PATH=/opt/homebrew/opt/ta-lib/lib/pkgconfig
-uv sync --extra freqtrade
+brew install ta-lib   # librería de sistema requerida por Freqtrade
+task install          # = uv sync --extra freqtrade (con las rutas de TA-Lib ya puestas)
 ```
 
-**Windows:** instalar las "VC++ Build Tools" (Desktop development with C++) y luego `uv sync --extra freqtrade`.
+**Windows:** instalar las "VC++ Build Tools" (Desktop development with C++) y luego `task install`.
 
-**Solo el núcleo** (sin Freqtrade, para desarrollar/testear la lógica): `uv sync`.
+**Solo el núcleo** (sin Freqtrade): `uv sync`.
 
 ## Uso
+
+Ejecuta `task` para ver todas las tareas. Cada tarea llama a `uv` por debajo.
 
 **Calidad de código:**
 
 ```bash
-uv run ruff check .     # lint
-uv run mypy             # tipado estricto
-uv run pytest           # tests (incluye property-based del risk gate)
+task check        # lint + typecheck + tests (el gate completo)
+task lint         # ruff
+task typecheck    # mypy --strict
+task test         # pytest (incluye property-based del risk gate)
 ```
 
 **CLI:**
 
 ```bash
-uv run olibuguard smoke              # arranca, lee config, autochequea el risk gate y sale
-uv run olibuguard run --mode paper   # arranca en paper (dry-run)
-uv run olibuguard run --mode live --i-understand-this-is-real-money   # live exige confirmación
+task smoke                                      # lee config y auto-chequea el risk gate
+task run -- --mode paper                        # arranca en paper (dry-run)
+task run -- --mode live --i-understand-this-is-real-money   # live exige confirmación
 ```
 
 **Backtest con Freqtrade:**
 
 ```bash
-uv run freqtrade download-data --userdir user_data --config user_data/config.json \
-  --pairs BTC/USDT ETH/USDT --timeframes 1h --timerange 20250101-20250401
-
-uv run freqtrade backtesting --userdir user_data --config user_data/config.json \
-  --strategy OlibuguardStrategy --timerange 20250101-20250401 --enable-protections
+task download -- --timerange 20250101-20250401
+task backtest -- --timerange 20250101-20250401
 ```
 
 **Docker (despliegue dry-run 24/7):**
