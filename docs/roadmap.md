@@ -36,7 +36,7 @@ These are ambitious targets — they require a genuinely profitable strategy, no
 | **1 – Strategy** | EMA 20/50 on 5m, reproducible backtest | ✅ |
 | **2 – Safety layer** | Circuit breakers, audit DB, kill-switch, error budget, Telegram | ✅ |
 | **3 – AI Advisor** | Claude Opus 4 via Bedrock, veto-only, extended thinking | ✅ |
-| **4 – Live** | Real Binance orders, ATR stoploss, stoploss_on_exchange | 🟡 in progress |
+| **4 – Live** | Paper bot running 24/7 in Docker, first positive backtest (+1.01%) | 🟡 in progress |
 
 ---
 
@@ -49,10 +49,15 @@ These are ambitious targets — they require a genuinely profitable strategy, no
 **Estimated duration**: 4–8 weeks
 
 **What to do**:
-- [ ] Fund Binance with real minimum capital ($100 USDT)
-- [ ] Run `task docker-up` with real orders for 30 days
-- [ ] Verify safety layers work in production (circuit breakers, Binance stop orders)
-- [ ] Confirm AI advisor is adding value — log its veto rate and reasons
+- [x] First positive backtest: +1.01%, 59 trades, 4.58% max drawdown (Oct 2024–Apr 2025)
+- [x] Paper bot running 24/7 in Docker (auto-start after rebuild)
+- [x] Safety layers validated: circuit breakers, audit DB isolation, kill-switch
+- [x] Break-even stop implemented: prevents +3% winners from becoming -2% losers
+- [x] Strategy stable: Golden Cross EMA 50/200 on 15m, 4 pairs (BTC/ETH/SOL/BNB)
+- [ ] **See first live trade** (waiting for Golden Cross — market in Death Cross as of 2026-05-28)
+- [ ] Run paper for 5+ days once first trade fires — verify stake, entry, exit are correct
+- [ ] Fund Binance with $100 USDT and switch to `task docker-up` (real orders)
+- [ ] Run real orders for 30 days — verify circuit breakers and AI veto work live
 - [ ] Compare real P&L vs paper: large divergence = slippage or execution issue
 
 **Success criterion**: bot alive for 30 days, drawdown < 10%, no catastrophic failures.
@@ -76,11 +81,16 @@ Profit amount doesn't matter yet — the goal is proving the system is stable.
 | **Monthly return** | > 3% | **> 8%** |
 
 **What to do**:
-- [ ] Backtest with 12+ months of 5m data (BTC/USDT + ETH/USDT)
-- [ ] Hyperopt: optimize EMA periods, ATR multiplier, minimum ROI
-- [ ] Add RSI entry filter: avoid buys when RSI > 70 (overbought)
-- [ ] Add volume confirmation: skip signal if volume < 20-candle average
-- [ ] Evaluate adding SOL/USDT and BNB/USDT for more signal frequency
+- [x] Timeframe 5m → 15m (less noise, better signal quality)
+- [x] EMA 20/50 → Golden Cross EMA 50/200 (higher quality signals)
+- [x] RSI ≤ 65 entry filter (avoid overbought entries)
+- [x] EMA200 1h macro trend filter (no trades against the macro trend)
+- [x] Break-even stop @+2% (win never becomes loss)
+- [x] Pairs: BTC + ETH + SOL + BNB (4 pairs, more signal frequency)
+- [ ] **Hyperopt**: optimize EMA periods, ATR multiplier, ROI — currently 0.14%/month, need 8%
+- [ ] Backtest over 12+ months (currently only 7 months)
+- [ ] Volume confirmation: revisit with better threshold (≥1.0 killed 71% of trades)
+- [ ] RSI dip buy: tested and removed — needs multi-timeframe support to avoid false signals
 - [ ] Only merge changes that improve backtest metrics — never "improve" blindly
 
 **Success criterion**: Sharpe > 1.0 in backtest, profit factor > 1.4, monthly return > 5%.
@@ -122,11 +132,9 @@ Profit amount doesn't matter yet — the goal is proving the system is stable.
 false signals and loses money. This directly limits monthly return.
 
 **What to do**:
-- [ ] Add market regime filter: compute ADX or Bollinger Band Width
-  - If ADX < 20 (flat market) → skip EMA crossover entries
-- [ ] Or simply: add a long-term trend filter (e.g. price above EMA 200 on 1h) to avoid
-  trading against the macro trend
-- [ ] Evaluate a second mean-reversion strategy for ranging periods to fill the gap
+- [x] Long-term trend filter (price above EMA 200 on 1h) — already implemented
+- [ ] ADX filter: if ADX < 20 (flat market) → skip EMA crossover entries
+- [ ] Mean-reversion strategy for ranging periods (RSI dip buy needs multi-TF support first)
 
 **Success criterion**: fewer false signals in backtests, better Sharpe in ranging periods.
 
@@ -148,8 +156,8 @@ false signals and loses money. This directly limits monthly return.
 
 | Month | Account | P&L $ | P&L % | Max drawdown | Notes |
 |-------|---------|--------|--------|--------------|-------|
-| Backtest 7m | $100 sim | +$0.91 | +0.91% | 3.53% | Oct 2024–Apr 2025; ETH+SOL+BNB; **first positive result** |
-| 2026-06 | $100 paper | — | — | — | Phase 4 live validation starting |
+| Backtest 7m | $100 sim | +$1.01 | +1.01% | 4.58% | Oct 2024–Apr 2025; BTC+ETH+SOL+BNB; **first positive result** |
+| 2026-06 | $100 paper | — | — | — | Phase 4: paper bot live, waiting for first trade (market in Death Cross) |
 
 ---
 
@@ -165,3 +173,6 @@ false signals and loses money. This directly limits monthly return.
 | 2026-05 | Drop BTC/USDT, trade ETH/SOL/BNB | Altcoins trend more sharply → better Golden Cross quality; BTC was -1.42% drag |
 | 2026-05 | Break-even stop @+2% profit | Prevents +3% winners from reverting to -2% losses; tipped backtest positive |
 | 2026-05 | ROI target 7% (from sweep 5%/7%/10%) | Local optimum; best trade hits 7% in backtest confirming target is reachable |
+| 2026-05 | Add BTC back (4 pairs total) | Break-even stop neutralises BTC drag; more pairs = more signal frequency |
+| 2026-05 | RSI dip buy tested and removed | Catching falling knives even with Golden Cross + 1h EMA200 filter; removed |
+| 2026-05 | Audit DB isolated from backtests | `_is_live` gate prevents simulated decisions polluting live audit trail |
