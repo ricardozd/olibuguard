@@ -583,11 +583,18 @@ class OlibuguardStrategy(IStrategy):
         return dataframe
 
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict[str, Any]) -> DataFrame:
-        fast, slow = dataframe["ema_fast"], dataframe["ema_slow"]
-        crossed_down = (fast < slow) & (fast.shift(1) >= slow.shift(1))  # Death Cross → exit long
-        crossed_up = (fast > slow) & (fast.shift(1) <= slow.shift(1))    # Golden Cross → exit short
-        dataframe.loc[crossed_down, "exit_long"] = 1
-        dataframe.loc[crossed_up, "exit_short"] = 1
+        """No signal-based exits — ROI, ATR stoploss, and custom_exit handle all closing.
+
+        Historical analysis showed EMA-crossover exit signals produced 0 winning exits
+        across 4 years of backtesting: 20 exits at 0% win rate, -$14 net P&L.  They
+        fired on mean-reversion trades at the worst possible moment (mid-range) and
+        triggered prematurely on trend trades before the ROI target was hit.
+
+        Exits are managed by:
+          - minimal_roi / roi table   → profit targets (hyperopt-tuned)
+          - custom_stoploss (ATR)     → dynamic trailing stop + break-even lock
+          - custom_exit               → early exit for rsi_bounce/rsi_drop when RSI recovers
+        """
         return dataframe
 
     def custom_exit(
