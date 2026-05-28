@@ -15,20 +15,20 @@
     },
     "buy": {
       "atr_range_mult": 2.595,
-      "atr_trend_mult": 3.924,
-      "breakeven_pct": 0.044,
-      "rsi_long_max": 78
+      "atr_trend_mult": 3.715,
+      "breakeven_pct": 0.012,
+      "rsi_long_max": 80
     },
     "sell": {
-      "rsi_short_min": 29
+      "rsi_short_min": 47
     },
     "roi": {
-      "0": 0.243,
-      "98": 0.074,
-      "186": 0.043,
-      "443": 0
+      "0": 0.371,
+      "32": 0.144,
+      "99": 0.062,
+      "385": 0
     }
   },
   "ft_stratparam_v": 1,
-  "export_time": "2026-05-28 15:08:49.803189+00:00"
+  "export_time": "2026-05-28 16:04:32.647553+00:00"
 }
