@@ -69,14 +69,17 @@ tasks:
       - uv run olibuguard run {{.CLI_ARGS}}
 
   download:
-    desc: 'Download OHLCV, e.g. `task download -- --timerange 20250101-20250401`'
+    desc: 'Download OHLCV futures data, e.g. `task download -- --timerange 20241001-20250501`'
     cmds:
       - >-
         uv run freqtrade download-data --userdir {{.USERDIR}} --config {{.FT_CONFIG}}
-        --pairs BTC/USDT ETH/USDT --timeframes 5m 1h {{.CLI_ARGS}}
+        --pairs BTC/USDT:USDT ETH/USDT:USDT SOL/USDT:USDT BNB/USDT:USDT
+        --timeframes 15m 1h {{.CLI_ARGS}}
 
   backtest:
     desc: 'Backtest, e.g. `task backtest -- --timerange 20250101-20250401`'
+    env:
+      OLIBUGUARD_CONFIG: user_data/config.yaml   # ensure RiskGate loads correct whitelist
     cmds:
       - >-
         uv run freqtrade backtesting --userdir {{.USERDIR}} --config {{.FT_CONFIG}}
@@ -84,6 +87,8 @@ tasks:
 
   paper:
     desc: Start Freqtrade in paper (dry-run) mode natively — live market data, no real orders
+    env:
+      OLIBUGUARD_CONFIG: user_data/config.yaml
     cmds:
       - >-
         uv run freqtrade trade --userdir {{.USERDIR}} --config {{.FT_CONFIG}}

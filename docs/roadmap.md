@@ -36,7 +36,7 @@ These are ambitious targets — they require a genuinely profitable strategy, no
 | **1 – Strategy** | EMA 20/50 on 5m, reproducible backtest | ✅ |
 | **2 – Safety layer** | Circuit breakers, audit DB, kill-switch, error budget, Telegram | ✅ |
 | **3 – AI Advisor** | Claude Opus 4 via Bedrock, veto-only, extended thinking | ✅ |
-| **4 – Live** | Paper bot running 24/7 in Docker, first positive backtest (+1.01%) | 🟡 in progress |
+| **4 – Live** | Futures long+short, investor capital ($500), backtest +2.14% | 🟡 in progress |
 
 ---
 
@@ -54,9 +54,11 @@ These are ambitious targets — they require a genuinely profitable strategy, no
 - [x] Safety layers validated: circuit breakers, audit DB isolation, kill-switch
 - [x] Break-even stop implemented: prevents +3% winners from becoming -2% losers
 - [x] Strategy stable: Golden Cross EMA 50/200 on 15m, 4 pairs (BTC/ETH/SOL/BNB)
-- [ ] **See first live trade** (waiting for Golden Cross — market in Death Cross as of 2026-05-28)
+- [x] **Futures long+short**: Death Cross = short, 1x leverage, bidirectional. Backtest +2.14%, 121 trades, DD 1.24%
+- [x] Investor capital: account raised to $500, risk limits tightened (daily loss 3%, drawdown 7%)
+- [ ] **See first live trade** (bot in paper mode on futures, waiting for Golden Cross or Death Cross signal)
 - [ ] Run paper for 5+ days once first trade fires — verify stake, entry, exit are correct
-- [ ] Fund Binance with $100 USDT and switch to `task docker-up` (real orders)
+- [ ] Fund Binance futures with $500 USDT and switch to `task docker-up` (real orders)
 - [ ] Run real orders for 30 days — verify circuit breakers and AI veto work live
 - [ ] Compare real P&L vs paper: large divergence = slippage or execution issue
 
@@ -156,8 +158,9 @@ false signals and loses money. This directly limits monthly return.
 
 | Month | Account | P&L $ | P&L % | Max drawdown | Notes |
 |-------|---------|--------|--------|--------------|-------|
-| Backtest 7m | $100 sim | +$1.01 | +1.01% | 4.58% | Oct 2024–Apr 2025; BTC+ETH+SOL+BNB; **first positive result** |
-| 2026-06 | $100 paper | — | — | — | Phase 4: paper bot live, waiting for first trade (market in Death Cross) |
+| Backtest 7m (spot) | $100 sim | +$1.01 | +1.01% | 4.58% | Oct 2024–Apr 2025; BTC+ETH+SOL+BNB longs-only |
+| Backtest 7m (futures) | $500 sim | +$10.69 | +2.14% | 1.24% | Oct 2024–Apr 2025; ETH+SOL+BNB longs+shorts (57L/64S); **BTC excluded by exchange min-stake**; shorts avg +1.61% |
+| 2026-06 | $500 paper | — | — | — | Phase 4: paper bot live on futures, waiting for first trade (market in Death Cross) |
 
 ---
 
@@ -176,3 +179,6 @@ false signals and loses money. This directly limits monthly return.
 | 2026-05 | Add BTC back (4 pairs total) | Break-even stop neutralises BTC drag; more pairs = more signal frequency |
 | 2026-05 | RSI dip buy tested and removed | Catching falling knives even with Golden Cross + 1h EMA200 filter; removed |
 | 2026-05 | Audit DB isolated from backtests | `_is_live` gate prevents simulated decisions polluting live audit trail |
+| 2026-05 | Futures long+short (1x leverage, isolated margin) | Operates in bull AND bear markets; Death Cross → short; shorts avg +1.61% in backtest |
+| 2026-05 | Investor capital $500, tighter risk limits | daily_loss 3%, drawdown 7%; stake $50/trade (10% of account) |
+| 2026-05 | AppConfig default whitelist = [] (no filter) | Fail-safe: when no config loaded, all pairs allowed; real filter lives in config.yaml |

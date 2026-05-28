@@ -56,16 +56,16 @@ class OlibuguardStrategy(IStrategy):
     INTERFACE_VERSION = 3
 
     timeframe = "15m"
-    can_short = False
+    can_short = True           # futures: Golden Cross = long, Death Cross = short
     stoploss = -0.10          # hard floor: Freqtrade enforces this even if ATR says wider
     use_custom_stoploss = True
     minimal_roi = {"0": 0.07}   # 7% — sweet spot found via ROI sweep (5%→-1.08, 7%→-0.50, 10%→-1.04)
     process_only_new_candles = True
-    # 200 candles per timeframe: covers EMA50 on 5m (16 h) and EMA200 on 1h (200 h).
+    # 200 candles per timeframe: covers EMA50 on 15m and EMA200 on 1h.
     startup_candle_count = 200
 
-    # ATR stoploss multiplier: stop = entry - ATR(14) × multiplier.
-    # 2.0 gives room for normal noise; tighten to 1.5 in ranging markets.
+    # ATR stoploss multiplier: stop = entry ± ATR(14) × multiplier (sign depends on direction).
+    # 3.5 gives room for normal noise without giving back all the profit.
     ATR_MULTIPLIER = 3.5
 
     @property
@@ -450,13 +450,15 @@ class OlibuguardStrategy(IStrategy):
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict[str, Any]) -> DataFrame:
         fast, slow = dataframe["ema_fast"], dataframe["ema_slow"]
-        crossed_up = (fast > slow) & (fast.shift(1) <= slow.shift(1))
+        crossed_up = (fast > slow) & (fast.shift(1) <= slow.shift(1))    # Golden Cross
+        crossed_down = (fast < slow) & (fast.shift(1) >= slow.shift(1))  # Death Cross
+        volume_ok = dataframe["volume"] > 0
 
+        # ── Long entry: Golden Cross ────────────────────────────────────────────
         # RSI filter: skip overbought entries — high RSI entries tend to reverse quickly.
         rsi_ok = dataframe["rsi"] <= 65
 
-        # Macro trend filter: only buy when price is above the 1h EMA 200.
-        # Trades against the macro trend have a much lower win rate.
+        # Macro trend filter: only long when price is above the 1h EMA 200.
         # Falls back to True (filter disabled) when 1h data is NaN or missing — fail-safe.
         if "ema200_1h" in dataframe.columns:
             ema_available = dataframe["ema200_1h"].notna()
@@ -464,17 +466,46 @@ class OlibuguardStrategy(IStrategy):
         else:
             trend_up = dataframe["close"] > 0  # always True — fail-safe
 
-        dataframe.loc[
-            crossed_up & (dataframe["volume"] > 0) & rsi_ok & trend_up,
-            "enter_long",
-        ] = 1
+        dataframe.loc[crossed_up & volume_ok & rsi_ok & trend_up, "enter_long"] = 1
+
+        # ── Short entry: Death Cross ────────────────────────────────────────────
+        # RSI filter: skip already-crashed assets — shorting oversold is catching a falling
+        # knife on the other side; wait for a bounce then re-short on the next Death Cross.
+        rsi_not_oversold = dataframe["rsi"] >= 35
+
+        # Macro trend filter (mirror): only short when price is below the 1h EMA 200.
+        # If price is still above the macro trend, the Death Cross is a whipsaw in a bull run.
+        if "ema200_1h" in dataframe.columns:
+            ema_available = dataframe["ema200_1h"].notna()
+            trend_down = (dataframe["close"] < dataframe["ema200_1h"]) | ~ema_available
+        else:
+            trend_down = dataframe["close"] > 0  # always True — fail-safe
+
+        dataframe.loc[crossed_down & volume_ok & rsi_not_oversold & trend_down, "enter_short"] = 1
+
         return dataframe
 
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict[str, Any]) -> DataFrame:
         fast, slow = dataframe["ema_fast"], dataframe["ema_slow"]
-        crossed_down = (fast < slow) & (fast.shift(1) >= slow.shift(1))
+        crossed_down = (fast < slow) & (fast.shift(1) >= slow.shift(1))  # Death Cross → exit long
+        crossed_up = (fast > slow) & (fast.shift(1) <= slow.shift(1))    # Golden Cross → exit short
         dataframe.loc[crossed_down, "exit_long"] = 1
+        dataframe.loc[crossed_up, "exit_short"] = 1
         return dataframe
+
+    def leverage(
+        self,
+        pair: str,
+        current_time: datetime,
+        current_rate: float,
+        proposed_leverage: float,
+        max_leverage: float,
+        entry_tag: str | None,
+        side: str,
+        **kwargs: Any,
+    ) -> float:
+        """Always 1x — spot-equivalent exposure, no margin call risk above normal stoploss."""
+        return 1.0
 
     def custom_stoploss(
         self,
@@ -485,12 +516,14 @@ class OlibuguardStrategy(IStrategy):
         current_profit: float,
         **kwargs: Any,
     ) -> float:
-        """ATR trailing stoploss with break-even protection.
+        """ATR trailing stoploss with break-even protection — works for both longs and shorts.
 
         Two layers:
-        1. ATR stop: stop = current_rate - ATR(14) × ATR_MULTIPLIER (trail up with price).
-        2. Break-even lock: once profit ≥ 2%, floor the stop at entry price so a winning
-           trade can never turn into a loss (stops at break-even at worst).
+        1. ATR stop: trail in the profit direction — BELOW current price for longs,
+           ABOVE current price for shorts (direction-aware).
+        2. Break-even lock: once profit ≥ 2%, floor the stop at open_rate so a winning
+           trade can never turn into a loss. stoploss_from_absolute handles the sign
+           inversion for shorts automatically.
 
         The hard `stoploss = -0.10` class attribute is the absolute worst-case floor.
         """
@@ -505,16 +538,21 @@ class OlibuguardStrategy(IStrategy):
         if atr <= 0:
             return self.stoploss  # fail-safe: bad ATR value
 
-        # Layer 1: ATR trailing stop below current price.
-        atr_stop_price = current_rate - atr * self.ATR_MULTIPLIER
+        # Layer 1: ATR trailing stop — direction-aware.
+        # Long: stop BELOW current price (loss if price drops).
+        # Short: stop ABOVE current price (loss if price rises).
+        if trade.is_short:
+            atr_stop_price = current_rate + atr * self.ATR_MULTIPLIER
+        else:
+            atr_stop_price = current_rate - atr * self.ATR_MULTIPLIER
         atr_stop = stoploss_from_absolute(atr_stop_price, current_rate, is_short=trade.is_short)
 
-        # Layer 2: break-even lock — once we're +2%, never let the stop go below entry.
-        # This converts a 3%-up-then-reversal from a loss into a scratch or small win.
+        # Layer 2: break-even lock — once we're +2%, never let the stop go past entry.
+        # For longs: stop at open_rate (below current when profitable).
+        # For shorts: stop at open_rate (above current when profitable).
+        # stoploss_from_absolute handles both correctly via is_short.
         if current_profit >= 0.02:
-            open_rate = trade.open_rate
-            # Break-even stop at open_rate (stoploss_from_absolute expects a price).
-            be_stop = stoploss_from_absolute(open_rate, current_rate, is_short=trade.is_short)
+            be_stop = stoploss_from_absolute(trade.open_rate, current_rate, is_short=trade.is_short)
             # Return the higher (less negative) of the two stops — most protective wins.
             return max(atr_stop, be_stop)
 
@@ -550,7 +588,7 @@ class OlibuguardStrategy(IStrategy):
             return 0.0
         intent = OrderIntent(
             symbol=pair,
-            side=Side.BUY,
+            side=Side.SELL if side == "short" else Side.BUY,
             quote_amount=Decimal(str(proposed_stake)),
             reference_price=ref_price,
         )
@@ -631,7 +669,7 @@ class OlibuguardStrategy(IStrategy):
                 return False
         intent = OrderIntent(
             symbol=pair,
-            side=Side.BUY,
+            side=Side.SELL if side == "short" else Side.BUY,
             quote_amount=Decimal(str(amount)) * Decimal(str(rate)),
             reference_price=reference,
             execution_price=Decimal(str(rate)),

@@ -71,22 +71,28 @@ def _cmd_smoke(args: argparse.Namespace) -> int:
     gate = RiskGate(config.risk)
     NullAdvisor()  # default advisor: never gives an opinion
     state = PortfolioState()
-    allowed = config.risk.whitelist[0] if config.risk.whitelist else "BTC/USDT"
+    allowed = config.risk.whitelist[0] if config.risk.whitelist else "BTC/USDT:USDT"
 
-    # The risk gate MUST reject invalid orders (self-check).
-    out_of_whitelist = OrderIntent(
-        symbol="FOO/BAR",
-        side=Side.BUY,
-        quote_amount=config.risk.min_order_quote,
-        reference_price=Decimal("1"),
-    )
+    # The risk gate MUST reject orders below min notional — always testable.
     too_small = OrderIntent(
         symbol=allowed,
         side=Side.BUY,
         quote_amount=config.risk.min_order_quote / 2,
         reference_price=Decimal("1"),
     )
-    for check, intent in (("whitelist", out_of_whitelist), ("min_order", too_small)):
+    checks: list[tuple[str, OrderIntent]] = [("min_order", too_small)]
+
+    # When whitelist is configured, the gate MUST reject unlisted pairs.
+    if config.risk.whitelist:
+        out_of_whitelist = OrderIntent(
+            symbol="FOO/BAR",
+            side=Side.BUY,
+            quote_amount=config.risk.min_order_quote,
+            reference_price=Decimal("1"),
+        )
+        checks.append(("whitelist", out_of_whitelist))
+
+    for check, intent in checks:
         if gate.evaluate(intent, state).approved:
             log.error("smoke.fail", check=check)
             _console.print(f"[bold red]smoke FAIL[/]: risk gate approved invalid order ({check})")

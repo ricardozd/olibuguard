@@ -11,7 +11,9 @@ def test_defaults_are_conservative() -> None:
     assert cfg.ai.enabled is False
     assert cfg.ai.provider == "null"
     assert cfg.exchange.testnet is True
-    assert "BTC/USDT" in cfg.risk.whitelist
+    # Empty whitelist = no filter (allows all pairs) — fail-safe behaviour.
+    # Specific pairs are declared in config.yaml; the code default is intentionally open.
+    assert cfg.risk.whitelist == []
 
 
 def test_loads_example_yaml() -> None:

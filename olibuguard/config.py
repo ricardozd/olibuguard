@@ -28,7 +28,7 @@ class RiskLimits(BaseModel):
     # Circuit breakers (automatic kill-switch).
     daily_loss_limit_pct: float = Field(default=0.05, gt=0, le=1)
     max_drawdown_pct: float = Field(default=0.10, gt=0, le=1)
-    whitelist: list[str] = Field(default_factory=lambda: ["BTC/USDT", "ETH/USDT"])
+    whitelist: list[str] = Field(default_factory=list)  # empty = allow all pairs (fail-safe)
     blacklist: list[str] = Field(default_factory=list)
 
 
