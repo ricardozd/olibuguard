@@ -191,12 +191,17 @@ class BedrockAdvisor:
             "messages": [{"role": "user", "content": prompt}],
         }
         if self._thinking:
-            # Extended thinking: Claude reasons step-by-step before the verdict.
-            # budget_tokens < max_tokens is enforced by AIConfig validator.
-            body_dict["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": self._thinking_budget,
-            }
+            # Extended thinking — Claude Opus 4 on Bedrock uses the "adaptive"
+            # format instead of the deprecated "enabled" + budget_tokens.
+            # thinking_budget_tokens is mapped to effort: <2k→low, <6k→medium, ≥6k→high.
+            if self._thinking_budget < 2000:
+                effort = "low"
+            elif self._thinking_budget < 6000:
+                effort = "medium"
+            else:
+                effort = "high"
+            body_dict["thinking"] = {"type": "adaptive"}
+            body_dict["output_config"] = {"effort": effort}
         response = self._client.invoke_model(
             modelId=self._model_id,
             contentType="application/json",

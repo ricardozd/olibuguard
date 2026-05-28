@@ -370,7 +370,12 @@ def test_bedrock_advisor_thinking_block_ignored(fake_boto3: Any) -> None:
 
 
 def test_bedrock_advisor_thinking_request_includes_budget(fake_boto3: Any) -> None:
-    """When thinking=True, invoke_model is called with the thinking block in the body."""
+    """When thinking=True, invoke_model uses the adaptive thinking format.
+
+    Claude Opus 4 on Bedrock no longer supports thinking.type='enabled'.
+    The new format uses thinking.type='adaptive' + output_config.effort.
+    budget_tokens is mapped to effort: <2k→low, <6k→medium, ≥6k→high.
+    """
     fake_boto3.client.return_value = _mock_client(
         _bedrock_thinking_response(veto=False)
     )
@@ -380,7 +385,9 @@ def test_bedrock_advisor_thinking_request_includes_budget(fake_boto3: Any) -> No
 
     call_kwargs = fake_boto3.client.return_value.invoke_model.call_args
     sent_body: dict[str, Any] = json.loads(call_kwargs.kwargs["body"])
-    assert sent_body.get("thinking") == {"type": "enabled", "budget_tokens": 2000}
+    # budget_tokens=2000 → effort="medium" (2000 is not < 2000, so medium threshold)
+    assert sent_body.get("thinking") == {"type": "adaptive"}
+    assert sent_body.get("output_config") == {"effort": "medium"}
 
 
 def test_bedrock_advisor_no_thinking_request_omits_budget(fake_boto3: Any) -> None:

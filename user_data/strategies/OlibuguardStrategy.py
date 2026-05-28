@@ -767,9 +767,14 @@ class OlibuguardStrategy(IStrategy):
         # ── AI advisor veto (Phase 3) ─────────────────────────────────────────
         # The advisor can only reduce or block — never initiate or enlarge a trade.
         # Any error (network, boto3, JSON parse) returns None → trade proceeds.
+        # Skipped entirely in backtest/hyperopt — calling Bedrock per trade would
+        # cost AWS credits, add latency, and pollute the audit trail with simulated
+        # decisions. The _is_live gate mirrors the same guard on DB/alert writes.
         state = self._portfolio_state(current_time)
-        ctx = self._build_market_context(pair, reference, current_time, analyzed, state)
-        opinion = run_safe("advisor_opinion", lambda: self._ai().opinion(ctx), None)
+        opinion = None
+        if self._is_live:
+            ctx = self._build_market_context(pair, reference, current_time, analyzed, state)
+            opinion = run_safe("advisor_opinion", lambda: self._ai().opinion(ctx), None)
         if opinion is not None:
             factor = clamp_advisor_factor(opinion.bias)
             if factor == 0.0:
