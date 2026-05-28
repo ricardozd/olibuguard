@@ -123,9 +123,13 @@ class OlibuguardStrategy(IStrategy):
         ]
 
     def informative_pairs(self) -> list[tuple[str, str]]:
-        """Declare 1h data for every whitelisted pair (needed for EMA 200 trend filter)."""
+        """Declare 1h and 4h data for every whitelisted pair.
+
+        - 1h: EMA50/200 crossover signals + macro level filter (close vs EMA200).
+        - 4h: EMA200 slope filter (macro trend DIRECTION over the last 2 days).
+        """
         pairs = self.dp.current_whitelist() if self.dp else []
-        return [(pair, "1h") for pair in pairs]
+        return [(pair, "1h") for pair in pairs] + [(pair, "4h") for pair in pairs]
 
     def bot_start(self, **kwargs: Any) -> None:
         cfg_path = os.environ.get("OLIBUGUARD_CONFIG")
@@ -531,6 +535,24 @@ class OlibuguardStrategy(IStrategy):
                     dataframe, inf_1h, self.timeframe, "1h", ffill=True
                 )
 
+        # 4h macro slope filter: EMA 200 on 4-hour candles + 2-day slope.
+        # Spans 200×4h = 800h ≈ 33 days — truly independent of the 1h crossover signal.
+        # The SLOPE (current EMA200 vs 12 bars ago = 48h ago) captures macro trend
+        # direction: a flat / reversing slope filters out chop-driven fakeouts.
+        # Diagnostic showed 2025 had 19.5 % fakeouts vs 12.5 % in 2024 because the
+        # 4h macro trend oscillated (46 % up / 54 % down) instead of staying directional.
+        # NOTE: a previous attempt used 4h EMA200 as a LEVEL filter (close > ema200)
+        # and made results worse; slope is a fundamentally different signal.
+        if self.dp is not None:
+            inf_4h = self.dp.get_pair_dataframe(pair=metadata["pair"], timeframe="4h")
+            if not inf_4h.empty:
+                inf_4h = inf_4h.copy()
+                inf_4h["ema200"] = inf_4h["close"].ewm(span=200, adjust=False).mean()
+                inf_4h["ema200_slope"] = inf_4h["ema200"] - inf_4h["ema200"].shift(12)
+                dataframe = merge_informative_pair(
+                    dataframe, inf_4h, self.timeframe, "4h", ffill=True
+                )
+
         return dataframe
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict[str, Any]) -> DataFrame:
@@ -550,7 +572,7 @@ class OlibuguardStrategy(IStrategy):
         """
         volume_ok = dataframe["volume"] > 0
 
-        # ── 1h macro trend filter ───────────────────────────────────────────────
+        # ── 1h macro trend filter (LEVEL: price vs 1h EMA200) ──────────────────
         # Falls back to True (filter disabled) when 1h data is NaN — fail-safe.
         if "ema200_1h" in dataframe.columns:
             ema_available = dataframe["ema200_1h"].notna()
@@ -559,6 +581,19 @@ class OlibuguardStrategy(IStrategy):
         else:
             macro_up   = dataframe["close"] > 0   # always True — fail-safe
             macro_down = dataframe["close"] > 0   # always True — fail-safe
+
+        # ── 4h macro slope filter (DIRECTION: 2-day slope of 4h EMA200) ─────────
+        # Blocks longs when the macro trend is flat / reversing (chop), blocks
+        # shorts when the macro trend is rising.  Targets the 2025 regime where
+        # the 4h EMA200 oscillated 46 %/54 % up/down vs ~65 % in 2023-2024.
+        # Fail-safe: if 4h data is NaN, the filter is disabled.
+        if "ema200_slope_4h" in dataframe.columns:
+            slope_available  = dataframe["ema200_slope_4h"].notna()
+            slope_trending_up   = (dataframe["ema200_slope_4h"] > 0) | ~slope_available
+            slope_trending_down = (dataframe["ema200_slope_4h"] < 0) | ~slope_available
+        else:
+            slope_trending_up   = dataframe["close"] > 0   # always True
+            slope_trending_down = dataframe["close"] > 0   # always True
 
         # Crossovers from the 1h informative pair (ema50_1h / ema200_1h).
         # Preferred over 15m EMAs: the 1h window (50h/200h) filters the noise that
@@ -577,16 +612,18 @@ class OlibuguardStrategy(IStrategy):
         # ── Signal 1: trend long — Golden Cross ─────────────────────────────────
         # RSI ceiling (hyperopt-tuned): skip overbought entries — if RSI > rsi_long_max
         # the up-move is already extended and more likely to reverse.
+        # 4h slope filter blocks longs when the macro trend is not rising.
         rsi_ok = dataframe["rsi"] <= self.rsi_long_max.value
-        gc = crossed_up & volume_ok & rsi_ok & macro_up
+        gc = crossed_up & volume_ok & rsi_ok & macro_up & slope_trending_up
         dataframe.loc[gc, "enter_long"] = 1
         dataframe.loc[gc, "enter_tag"]  = "ema_gc"
 
         # ── Signal 2: trend short — Death Cross ──────────────────────────────────
         # RSI floor (hyperopt-tuned): skip already-oversold candles — RSI < rsi_short_min
         # means momentum is already exhausted and a short here chases the move late.
+        # 4h slope filter blocks shorts when the macro trend is not falling.
         rsi_not_oversold = dataframe["rsi"] >= self.rsi_short_min.value
-        dc = crossed_down & volume_ok & rsi_not_oversold & macro_down
+        dc = crossed_down & volume_ok & rsi_not_oversold & macro_down & slope_trending_down
         dataframe.loc[dc, "enter_short"] = 1
         dataframe.loc[dc, "enter_tag"]   = "ema_dc"
 
