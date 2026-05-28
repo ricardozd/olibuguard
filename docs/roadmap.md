@@ -160,6 +160,7 @@ false signals and loses money. This directly limits monthly return.
 |-------|---------|--------|--------|--------------|-------|
 | Backtest 7m (spot) | $100 sim | +$1.01 | +1.01% | 4.58% | Oct 2024–Apr 2025; BTC+ETH+SOL+BNB longs-only |
 | Backtest 7m (futures) | $500 sim | +$10.69 | +2.14% | 1.24% | Oct 2024–Apr 2025; ETH+SOL+BNB longs+shorts (57L/64S); **BTC excluded by exchange min-stake**; shorts avg +1.61% |
+| Backtest 7m (3-strategy) | $500 sim | +$10.98 | +2.19% | 1.25% | Oct 2024–Apr 2025; GC/DC (121 trades) + rsi_drop 3 trades (2W/1L); rsi_bounce 0 fires (trending period); breakout removed (false signals on 15m) |
 | 2026-06 | $500 paper | — | — | — | Phase 4: paper bot live on futures, waiting for first trade (market in Death Cross) |
 
 ---
@@ -182,3 +183,6 @@ false signals and loses money. This directly limits monthly return.
 | 2026-05 | Futures long+short (1x leverage, isolated margin) | Operates in bull AND bear markets; Death Cross → short; shorts avg +1.61% in backtest |
 | 2026-05 | Investor capital $500, tighter risk limits | daily_loss 3%, drawdown 7%; stake $50/trade (10% of account) |
 | 2026-05 | AppConfig default whitelist = [] (no filter) | Fail-safe: when no config loaded, all pairs allowed; real filter lives in config.yaml |
+| 2026-05 | ADX + Bollinger Bands + RSI mean-reversion signals | Ranging regime (ADX ≤ 20): rsi_bounce long + rsi_drop short; custom_exit on RSI recovery; per-tag ATR stops |
+| 2026-05 | Breakout signals (roll_high/low) removed | 20-candle breakout on 15m = 5h history → too short, 143 false breaks in backtest; needs 1h+ TF |
+| 2026-05 | ADX filter on GC/DC removed | Crossovers fire as trends form, before ADX builds; ADX ≥ 25 filter cut 97% of valid signals |
