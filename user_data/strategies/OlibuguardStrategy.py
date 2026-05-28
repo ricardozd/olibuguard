@@ -35,7 +35,13 @@ from pandas import DataFrame
 
 from freqtrade.enums import RunMode
 from freqtrade.persistence import Trade
-from freqtrade.strategy import IStrategy, merge_informative_pair, stoploss_from_absolute
+from freqtrade.strategy import (
+    DecimalParameter,
+    IntParameter,
+    IStrategy,
+    merge_informative_pair,
+    stoploss_from_absolute,
+)
 
 from olibuguard.advisor.base import AIAdvisor, NullAdvisor, clamp_advisor_factor
 from olibuguard.alerts.sink import AlertSink, NullAlertSink
@@ -64,11 +70,32 @@ class OlibuguardStrategy(IStrategy):
     # 200 candles per timeframe: covers EMA50 on 15m and EMA200 on 1h.
     startup_candle_count = 200
 
-    # ATR stoploss multipliers — tuned per strategy type.
-    # Trend-following needs room to breathe; mean-reversion cuts quickly when wrong.
-    ATR_MULTIPLIER = 3.5        # trend (Golden/Death Cross): wide stop, let trend develop
-    BREAKOUT_ATR_MULT = 2.5     # breakout/momentum: medium stop, momentum dies fast
-    RANGE_ATR_MULT = 2.0        # mean-reversion: tight stop, bounce should not go far wrong
+    # ATR stoploss multipliers — reference values; the actual values used at runtime
+    # come from the DecimalParameter objects below (supports Hyperopt).
+    ATR_MULTIPLIER    = 3.5   # trend default
+    BREAKOUT_ATR_MULT = 2.5   # breakout default (signals disabled — kept for future use)
+    RANGE_ATR_MULT    = 2.0   # mean-reversion default
+
+    # ── Hyperopt search spaces ───────────────────────────────────────────────
+    # ATR multiplier for trend signals (ema_gc / ema_dc).
+    # Low → tight stop, cut losses fast but exit good trends early.
+    # High → wide stop, let trends breathe but absorb bigger individual losses.
+    atr_trend_mult = DecimalParameter(1.5, 5.0, default=3.5, space="buy", optimize=True, load=True)
+
+    # ATR multiplier for mean-reversion (rsi_bounce / rsi_drop).
+    # Tight by default — if a bounce doesn't hold, we want out quickly.
+    atr_range_mult = DecimalParameter(1.0, 3.5, default=2.0, space="buy", optimize=True, load=True)
+
+    # Break-even lock: once this profit % is reached, stop moves to entry price.
+    # Lower → lock in gains sooner (good for whipsaw markets).
+    # Higher → let trade breathe more (good for smooth trends).
+    breakeven_pct = DecimalParameter(0.005, 0.05, default=0.02, space="buy", optimize=True, load=True)
+
+    # RSI ceiling for Golden Cross long entries — skip overbought candles.
+    rsi_long_max = IntParameter(50, 80, default=65, space="buy", optimize=True, load=True)
+
+    # RSI floor for Death Cross short entries — skip already-oversold candles.
+    rsi_short_min = IntParameter(20, 50, default=35, space="sell", optimize=True, load=True)
 
     @property
     def protections(self) -> list[dict[str, Any]]:
@@ -540,16 +567,15 @@ class OlibuguardStrategy(IStrategy):
         dataframe.loc[bounce_short, "enter_tag"]   = "rsi_drop"
 
         # ── Signal 1: trend long — Golden Cross (highest long priority) ─────────
-        # RSI <= 65: skip overbought entries — high-RSI GC entries reverse quickly.
-        # No ADX filter: see docstring — crossovers precede ADX build-up by design.
-        rsi_ok = dataframe["rsi"] <= 65
+        # RSI filter: Hyperopt-tuned ceiling (default 65) — skip overbought entries.
+        rsi_ok = dataframe["rsi"] <= self.rsi_long_max.value
         gc = crossed_up & volume_ok & rsi_ok & macro_up
         dataframe.loc[gc, "enter_long"] = 1
         dataframe.loc[gc, "enter_tag"]  = "ema_gc"
 
         # ── Signal 2: trend short — Death Cross (highest short priority) ────────
-        # RSI >= 35: skip already-oversold — shorting deep oversold catches the bottom.
-        rsi_not_oversold = dataframe["rsi"] >= 35
+        # RSI filter: Hyperopt-tuned floor (default 35) — skip already-oversold.
+        rsi_not_oversold = dataframe["rsi"] >= self.rsi_short_min.value
         dc = crossed_down & volume_ok & rsi_not_oversold & macro_down
         dataframe.loc[dc, "enter_short"] = 1
         dataframe.loc[dc, "enter_tag"]   = "ema_dc"
@@ -650,17 +676,16 @@ class OlibuguardStrategy(IStrategy):
         if atr <= 0:
             return self.stoploss  # fail-safe: bad ATR value
 
-        # ATR multiplier is signal-type-aware — each strategy has a different risk profile.
-        # Mean-reversion: tight stop (2.0×) — if price keeps going, the thesis is wrong.
-        # Breakout/momentum: medium stop (2.5×) — momentum can spike before reversing.
-        # Trend-following: wide stop (3.5×) — trends need room to breathe; minor dips are normal.
+        # ATR multiplier is signal-type-aware — values come from Hyperopt parameters (.value).
+        # Mean-reversion: tight stop — if bounce doesn't hold, cut fast.
+        # Trend-following: wide stop — minor retracements are normal, don't cut too early.
         enter_tag = getattr(trade, "enter_tag", None) or ""
         if enter_tag in ("rsi_bounce", "rsi_drop"):
-            atr_mult = self.RANGE_ATR_MULT      # 2.0
+            atr_mult = self.atr_range_mult.value
         elif enter_tag in ("breakout_long", "breakout_short"):
-            atr_mult = self.BREAKOUT_ATR_MULT   # 2.5
+            atr_mult = self.BREAKOUT_ATR_MULT   # breakout disabled; keep default if re-enabled
         else:
-            atr_mult = self.ATR_MULTIPLIER      # 3.5 — default for ema_gc / ema_dc / unknown
+            atr_mult = self.atr_trend_mult.value  # ema_gc / ema_dc / unknown
 
         # Layer 1: ATR trailing stop — direction-aware.
         # Long: stop BELOW current price (loss if price drops).
@@ -671,11 +696,9 @@ class OlibuguardStrategy(IStrategy):
             atr_stop_price = current_rate - atr * atr_mult
         atr_stop = stoploss_from_absolute(atr_stop_price, current_rate, is_short=trade.is_short)
 
-        # Layer 2: break-even lock — once we're +2%, never let the stop go past entry.
-        # For longs: stop at open_rate (below current when profitable).
-        # For shorts: stop at open_rate (above current when profitable).
-        # stoploss_from_absolute handles both correctly via is_short.
-        if current_profit >= 0.02:
+        # Layer 2: break-even lock — Hyperopt-tuned threshold (.value) replaces hardcoded 2%.
+        # Once profit ≥ breakeven_pct, floor the stop at entry price.
+        if current_profit >= self.breakeven_pct.value:
             be_stop = stoploss_from_absolute(trade.open_rate, current_rate, is_short=trade.is_short)
             # Return the higher (less negative) of the two stops — most protective wins.
             return max(atr_stop, be_stop)

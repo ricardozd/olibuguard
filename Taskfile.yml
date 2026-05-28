@@ -85,6 +85,17 @@ tasks:
         uv run freqtrade backtesting --userdir {{.USERDIR}} --config {{.FT_CONFIG}}
         --strategy {{.STRATEGY}} --enable-protections {{.CLI_ARGS}}
 
+  hyperopt:
+    desc: 'Run hyperopt, e.g. `task hyperopt -- --epochs 500 --timerange 20220101-20260101`'
+    env:
+      OLIBUGUARD_CONFIG: user_data/config.yaml
+    cmds:
+      - >-
+        uv run freqtrade hyperopt --userdir {{.USERDIR}} --config {{.FT_CONFIG}}
+        --strategy {{.STRATEGY}} --enable-protections
+        --hyperopt-loss SharpeHyperOptLossDaily
+        --spaces buy sell roi -j -1 {{.CLI_ARGS}}
+
   paper:
     desc: Start Freqtrade in paper (dry-run) mode natively — live market data, no real orders
     env:
