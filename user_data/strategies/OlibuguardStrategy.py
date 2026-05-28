@@ -80,7 +80,10 @@ class OlibuguardStrategy(IStrategy):
     # ATR multiplier for trend signals (ema_gc / ema_dc).
     # Low → tight stop, cut losses fast but exit good trends early.
     # High → wide stop, let trends breathe but absorb bigger individual losses.
-    atr_trend_mult = DecimalParameter(1.5, 5.0, default=3.5, space="buy", optimize=True, load=True)
+    # Range extended to 10.0: previous hyperopt used broken circuit-breaker data
+    # that only counted 2022 bear-market trades, biasing toward tight stops.
+    # Full 4-year dataset (2022-2025) needs room to find the wider optimum.
+    atr_trend_mult = DecimalParameter(1.5, 10.0, default=3.5, space="buy", optimize=True, load=True)
 
     # ATR multiplier for mean-reversion entries (rsi_bounce / rsi_drop).
     # Range signals are currently disabled — this parameter is kept for

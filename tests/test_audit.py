@@ -80,5 +80,23 @@ def test_sqlite_reader_empty_db(tmp_path: Path) -> None:
     assert sink.last_equity_point() is None
 
 
+def test_peak_equity_uses_numeric_not_lexicographic_max(tmp_path: Path) -> None:
+    """Regression: equity_quote is stored as TEXT; func.max must CAST to numeric.
+
+    Lexicographic ordering would rank "99.0" > "495.0" (because '9' > '4'),
+    returning the wrong peak.  The fix CASTs to FLOAT before MAX so the result
+    matches numeric ordering.
+    """
+    pytest.importorskip("sqlalchemy")
+    from olibuguard.audit.sqlite import SQLiteAuditSink
+
+    sink = SQLiteAuditSink(tmp_path / "peak.sqlite")
+    for amount in ("99.0", "495.0", "100.0"):
+        sink.record_equity(
+            EquityPoint(at=datetime(2025, 1, 1, tzinfo=UTC), equity_quote=Decimal(amount))
+        )
+    assert sink.peak_equity_quote() == Decimal("495.0")
+
+
 def test_null_sink_does_not_satisfy_audit_reader() -> None:
     assert not isinstance(NullAuditSink(), AuditReader)
