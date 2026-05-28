@@ -180,7 +180,10 @@ class OlibuguardStrategy(IStrategy):
 
         # Reconciliation (E): restore peak equity from the audit DB so the drawdown
         # circuit breaker is not inadvertently reset to zero after a restart.
-        if isinstance(self._audit, AuditReader):
+        # Guard: skip in backtest/hyperopt — the DB holds LIVE equity history; restoring
+        # a stale live peak into a simulation would cause false drawdown readings that
+        # block all simulated trades.
+        if self._is_live and isinstance(self._audit, AuditReader):
             recorded_peak = run_safe(
                 "audit_peak_read", self._audit.peak_equity_quote, Decimal("0")
             )
@@ -377,12 +380,23 @@ class OlibuguardStrategy(IStrategy):
 
     def _portfolio_state(self, now: datetime) -> PortfolioState:
         equity = self._read_equity()
-        peak = max(getattr(self, "_peak_equity", Decimal("0")), equity)
-        self._peak_equity = peak
+        # Circuit breakers (drawdown + daily loss) are live-trading safety nets.
+        # In backtest/hyperopt the wallet API reports simulated equity that includes
+        # unrealized open-position losses, which can push the apparent drawdown above
+        # the threshold and trip the breaker permanently — blocking all future entries
+        # and producing misleading backtesting results.  Peak and daily PnL are set to
+        # neutral values so the risk gate applies sizing and min-notional checks only.
+        if self._is_live:
+            peak = max(getattr(self, "_peak_equity", Decimal("0")), equity)
+            self._peak_equity = peak
+            realized_pnl = self._realized_pnl_today(now)
+        else:
+            peak = Decimal("0")   # disables drawdown circuit breaker
+            realized_pnl = Decimal("0")  # disables daily-loss circuit breaker
         return PortfolioState(
             equity_quote=equity,
             peak_equity_quote=peak,
-            realized_pnl_today_quote=self._realized_pnl_today(now),
+            realized_pnl_today_quote=realized_pnl,
         )
 
     def _build_market_context(

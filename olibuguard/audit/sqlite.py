@@ -12,8 +12,9 @@ from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import cast, create_engine, func, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
+from sqlalchemy.types import Float
 
 from olibuguard.audit.records import DecisionAudit, EquityPoint
 
@@ -91,12 +92,18 @@ class SQLiteAuditSink:
             ]
 
     def peak_equity_quote(self) -> Decimal:
-        """Return the maximum equity_quote ever recorded, or zero if no data."""
+        """Return the maximum equity_quote ever recorded, or zero if no data.
+
+        ``equity_quote`` is stored as TEXT; ``func.max`` on TEXT uses lexicographic
+        ordering which produces wrong results (e.g. "99.0" > "495.0").  CAST to FLOAT
+        before applying MAX so SQLite uses numeric ordering.  The result is converted
+        back to Decimal for precision-safe downstream arithmetic.
+        """
         with Session(self._engine) as session:
             result = session.execute(
-                select(func.max(_EquityRow.equity_quote))
+                select(func.max(cast(_EquityRow.equity_quote, Float)))
             ).scalar_one_or_none()
-            return Decimal("0") if result is None else Decimal(result)
+            return Decimal("0") if result is None else Decimal(str(result))
 
     def last_equity_point(self) -> EquityPoint | None:
         """Return the most recently recorded equity point, or None if no data."""
