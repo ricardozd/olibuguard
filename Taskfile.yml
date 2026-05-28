@@ -94,7 +94,7 @@ tasks:
         uv run freqtrade hyperopt --userdir {{.USERDIR}} --config {{.FT_CONFIG}}
         --strategy {{.STRATEGY}} --enable-protections
         --hyperopt-loss SharpeHyperOptLossDaily
-        --spaces buy sell roi -j -1 {{.CLI_ARGS}}
+        --spaces buy sell roi -j 1 {{.CLI_ARGS}}
 
   paper:
     desc: Start Freqtrade in paper (dry-run) mode natively — live market data, no real orders
