@@ -20,7 +20,7 @@
       "rsi_long_max": 78
     },
     "sell": {
-      "rsi_short_min": 49
+      "rsi_short_min": 29
     },
     "roi": {
       "0": 0.243,

@@ -82,9 +82,10 @@ class OlibuguardStrategy(IStrategy):
     # High → wide stop, let trends breathe but absorb bigger individual losses.
     atr_trend_mult = DecimalParameter(1.5, 5.0, default=3.5, space="buy", optimize=True, load=True)
 
-    # ATR multiplier for mean-reversion (rsi_bounce / rsi_drop).
-    # Tight by default — if a bounce doesn't hold, we want out quickly.
-    atr_range_mult = DecimalParameter(1.0, 3.5, default=2.0, space="buy", optimize=True, load=True)
+    # ATR multiplier for mean-reversion entries (rsi_bounce / rsi_drop).
+    # Range signals are currently disabled — this parameter is kept for
+    # potential re-enablement but excluded from hyperopt search.
+    atr_range_mult = DecimalParameter(1.0, 3.5, default=2.0, space="buy", optimize=False, load=True)
 
     # Break-even lock: once this profit % is reached, stop moves to entry price.
     # Lower → lock in gains sooner (good for whipsaw markets).
@@ -516,29 +517,21 @@ class OlibuguardStrategy(IStrategy):
         return dataframe
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict[str, Any]) -> DataFrame:
-        """Three-strategy entry engine — signals tagged via enter_tag for differentiated exits.
+        """Trend-following entry engine — two signals tagged via enter_tag.
 
-        Priority order (last assignment wins, so highest priority is last):
-          3 · rsi_bounce  ranging long  — RSI oversold turning up + price at lower BB
-          4 · rsi_drop    ranging short — RSI overbought turning down + price at upper BB
-          1 · ema_gc      Golden Cross long  (overwrites rsi_bounce if both fire)
-          2 · ema_dc      Death Cross  short (overwrites rsi_drop  if both fire)
+          1 · ema_gc  Golden Cross long  — EMA50(1h) crosses above EMA200(1h), price above
+                      macro EMA200(1h), RSI not overbought
+          2 · ema_dc  Death Cross short — EMA50(1h) crosses below EMA200(1h), price below
+                      macro EMA200(1h), RSI not oversold
 
-        Breakout (roll_high/low + volume) deliberately excluded: on 15m a 20-candle high
-        is only 5 hours of history — too short to be a meaningful resistance level and
-        generates a high volume of false breaks.  Breakout signals belong on 1h+.
+        Mean-reversion signals (rsi_bounce / rsi_drop) were disabled after backtesting
+        showed they were consistently net-negative over 4 years across all market regimes:
+        they fired at the wrong point in the trend and their ATR stops were too tight.
 
-        ADX is used only to gate ranging signals (ADX <= 20 = flat market).
-        GC/DC intentionally have NO ADX requirement: EMA 50/200 crossovers fire as a
-        trend is forming, before ADX has time to build; requiring ADX >= 25 cuts > 97%
-        of valid signals because the indicator lags the crossover by several candles.
+        GC/DC have NO ADX gate: EMA crossovers fire as a trend is forming, before ADX
+        has time to build — requiring ADX ≥ 25 cuts >97% of valid signals.
         """
         volume_ok = dataframe["volume"] > 0
-
-        # ── Regime detection via ADX ────────────────────────────────────────────
-        # ADX <= 20  → confirmed ranging market → mean-reversion (RSI + BB)
-        # ADX >  20  → trending or building trend → GC/DC eligible
-        ranging = dataframe["adx"] <= 20
 
         # ── 1h macro trend filter ───────────────────────────────────────────────
         # Falls back to True (filter disabled) when 1h data is NaN — fail-safe.
@@ -564,33 +557,17 @@ class OlibuguardStrategy(IStrategy):
             crossed_up   = (fast > slow) & (fast.shift(1) <= slow.shift(1))
             crossed_down = (fast < slow) & (fast.shift(1) >= slow.shift(1))
 
-        # ── Signal 3: mean-reversion long — RSI bounce at lower BB ─────────────
-        # Entry: RSI just turned up from below 30 AND price is at/below the lower BB.
-        # Restricted to confirmed ranging regime (ADX <= 20) to avoid catching a
-        # trending knife — in a downtrend, RSI < 30 is momentum, not a bounce.
-        rsi_turning_up = (dataframe["rsi"] < 30) & (dataframe["rsi"] > dataframe["rsi"].shift(1))
-        at_lower_bb    = dataframe["close"] <= dataframe["bb_lower"] * 1.01   # 1% tolerance
-        bounce_long    = rsi_turning_up & at_lower_bb & volume_ok & ranging
-        dataframe.loc[bounce_long, "enter_long"] = 1
-        dataframe.loc[bounce_long, "enter_tag"]  = "rsi_bounce"
-
-        # ── Signal 4: mean-reversion short — RSI reversal at upper BB ──────────
-        # Entry: RSI just turned down from above 70 AND price is at/above the upper BB.
-        rsi_turning_down = (dataframe["rsi"] > 70) & (dataframe["rsi"] < dataframe["rsi"].shift(1))
-        at_upper_bb      = dataframe["close"] >= dataframe["bb_upper"] * 0.99  # 1% tolerance
-        bounce_short     = rsi_turning_down & at_upper_bb & volume_ok & ranging
-        dataframe.loc[bounce_short, "enter_short"] = 1
-        dataframe.loc[bounce_short, "enter_tag"]   = "rsi_drop"
-
-        # ── Signal 1: trend long — Golden Cross (highest long priority) ─────────
-        # RSI filter: Hyperopt-tuned ceiling (default 65) — skip overbought entries.
+        # ── Signal 1: trend long — Golden Cross ─────────────────────────────────
+        # RSI ceiling (hyperopt-tuned): skip overbought entries — if RSI > rsi_long_max
+        # the up-move is already extended and more likely to reverse.
         rsi_ok = dataframe["rsi"] <= self.rsi_long_max.value
         gc = crossed_up & volume_ok & rsi_ok & macro_up
         dataframe.loc[gc, "enter_long"] = 1
         dataframe.loc[gc, "enter_tag"]  = "ema_gc"
 
-        # ── Signal 2: trend short — Death Cross (highest short priority) ────────
-        # RSI filter: Hyperopt-tuned floor (default 35) — skip already-oversold.
+        # ── Signal 2: trend short — Death Cross ──────────────────────────────────
+        # RSI floor (hyperopt-tuned): skip already-oversold candles — RSI < rsi_short_min
+        # means momentum is already exhausted and a short here chases the move late.
         rsi_not_oversold = dataframe["rsi"] >= self.rsi_short_min.value
         dc = crossed_down & volume_ok & rsi_not_oversold & macro_down
         dataframe.loc[dc, "enter_short"] = 1
@@ -609,7 +586,6 @@ class OlibuguardStrategy(IStrategy):
         Exits are managed by:
           - minimal_roi / roi table   → profit targets (hyperopt-tuned)
           - custom_stoploss (ATR)     → dynamic trailing stop + break-even lock
-          - custom_exit               → early exit for rsi_bounce/rsi_drop when RSI recovers
         """
         return dataframe
 
@@ -622,36 +598,12 @@ class OlibuguardStrategy(IStrategy):
         current_profit: float,
         **kwargs: Any,
     ) -> str | None:
-        """Early exit for mean-reversion trades when RSI returns to neutral.
+        """Reserved for future signal-specific early exits.
 
-        Trend and breakout trades use minimal_roi + custom_stoploss exits only.
-        Mean-reversion trades (rsi_bounce / rsi_drop) target the BB midline, not a
-        fixed % ROI — so we exit when RSI recovers to the neutral zone (45–55)
-        rather than waiting for the 7% minimal_roi that may never arrive in a range.
-
-        Returns a string exit reason (logged in Freqtrade) or None (no early exit).
+        Mean-reversion signals (rsi_bounce / rsi_drop) and their RSI-recovery exits
+        were removed after consistently negative backtesting results.  All exits are
+        now handled by minimal_roi (ROI table) and custom_stoploss (ATR trailing).
         """
-        enter_tag = getattr(trade, "enter_tag", None)
-        if enter_tag not in ("rsi_bounce", "rsi_drop"):
-            return None   # trend / breakout trades: let minimal_roi + ATR handle exits
-
-        dp = self.dp
-        if dp is None:
-            return None
-        dataframe, _ = dp.get_analyzed_dataframe(pair, self.timeframe)
-        if dataframe is None or dataframe.empty or "rsi" not in dataframe.columns:
-            return None
-
-        rsi = float(dataframe["rsi"].iloc[-1])
-
-        # Long bounce: exit when RSI recovers above 55 (no longer oversold territory).
-        if enter_tag == "rsi_bounce" and rsi > 55:
-            return "rsi_recovered"
-
-        # Short reversal: exit when RSI falls below 45 (no longer overbought territory).
-        if enter_tag == "rsi_drop" and rsi < 45:
-            return "rsi_recovered_short"
-
         return None
 
     def leverage(
@@ -699,13 +651,11 @@ class OlibuguardStrategy(IStrategy):
         if atr <= 0:
             return self.stoploss  # fail-safe: bad ATR value
 
-        # ATR multiplier is signal-type-aware — values come from Hyperopt parameters (.value).
-        # Mean-reversion: tight stop — if bounce doesn't hold, cut fast.
-        # Trend-following: wide stop — minor retracements are normal, don't cut too early.
+        # ATR multiplier — hyperopt-tuned via atr_trend_mult.
+        # (atr_range_mult exists for potential range-signal re-enablement but is not
+        #  currently used; breakout signals are also disabled.)
         enter_tag = getattr(trade, "enter_tag", None) or ""
-        if enter_tag in ("rsi_bounce", "rsi_drop"):
-            atr_mult = self.atr_range_mult.value
-        elif enter_tag in ("breakout_long", "breakout_short"):
+        if enter_tag in ("breakout_long", "breakout_short"):
             atr_mult = self.BREAKOUT_ATR_MULT   # breakout disabled; keep default if re-enabled
         else:
             atr_mult = self.atr_trend_mult.value  # ema_gc / ema_dc / unknown
