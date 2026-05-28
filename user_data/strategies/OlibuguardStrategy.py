@@ -502,6 +502,12 @@ class OlibuguardStrategy(IStrategy):
             inf_1h = self.dp.get_pair_dataframe(pair=metadata["pair"], timeframe="1h")
             if not inf_1h.empty:
                 inf_1h = inf_1h.copy()
+                # EMA50 + EMA200 on 1h: trend crossovers at this timeframe span 50h/200h
+                # of price history — far fewer false signals than the same EMAs on 15m
+                # (12h/50h).  merge_informative_pair forward-fills into 15m rows so each
+                # 1h candle covers exactly 4 rows; shift(1) still detects the crossover
+                # only on the first 15m row of the new 1h period.
+                inf_1h["ema50"]  = inf_1h["close"].ewm(span=50,  adjust=False).mean()
                 inf_1h["ema200"] = inf_1h["close"].ewm(span=200, adjust=False).mean()
                 dataframe = merge_informative_pair(
                     dataframe, inf_1h, self.timeframe, "1h", ffill=True
@@ -544,9 +550,19 @@ class OlibuguardStrategy(IStrategy):
             macro_up   = dataframe["close"] > 0   # always True — fail-safe
             macro_down = dataframe["close"] > 0   # always True — fail-safe
 
-        fast, slow = dataframe["ema_fast"], dataframe["ema_slow"]
-        crossed_up   = (fast > slow) & (fast.shift(1) <= slow.shift(1))   # Golden Cross
-        crossed_down = (fast < slow) & (fast.shift(1) >= slow.shift(1))   # Death Cross
+        # Crossovers from the 1h informative pair (ema50_1h / ema200_1h).
+        # Preferred over 15m EMAs: the 1h window (50h/200h) filters the noise that
+        # makes 15m crossovers (12h/50h) whipsaws.  Falls back to 15m if 1h data
+        # is unavailable (e.g. unit tests without a data provider).
+        if "ema50_1h" in dataframe.columns and "ema200_1h" in dataframe.columns:
+            fast_1h = dataframe["ema50_1h"]
+            slow_1h = dataframe["ema200_1h"]
+            crossed_up   = (fast_1h > slow_1h) & (fast_1h.shift(1) <= slow_1h.shift(1))
+            crossed_down = (fast_1h < slow_1h) & (fast_1h.shift(1) >= slow_1h.shift(1))
+        else:
+            fast, slow = dataframe["ema_fast"], dataframe["ema_slow"]
+            crossed_up   = (fast > slow) & (fast.shift(1) <= slow.shift(1))
+            crossed_down = (fast < slow) & (fast.shift(1) >= slow.shift(1))
 
         # ── Signal 3: mean-reversion long — RSI bounce at lower BB ─────────────
         # Entry: RSI just turned up from below 30 AND price is at/below the lower BB.
