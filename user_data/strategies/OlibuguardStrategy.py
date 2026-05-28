@@ -254,20 +254,26 @@ class OlibuguardStrategy(IStrategy):
         verdict: RiskVerdict,
         now: datetime,
     ) -> None:
-        """Persist a risk-gate decision; never raises (fail-safe)."""
-        record = DecisionAudit(
-            at=now.astimezone(UTC),
-            symbol=symbol,
-            kind=kind,
-            reference_price=reference_price,
-            equity_quote=equity,
-            approved=verdict.approved,
-            reason=verdict.reason,
-            quote_amount=(verdict.intent.quote_amount if verdict.intent is not None else None),
-            code_version=getattr(self, "_code_version", "unknown"),
-        )
-        run_safe("audit_decision", lambda: self._sink().record_decision(record), None)
-        # Alert on circuit breaker trips (G).
+        """Persist a risk-gate decision; never raises (fail-safe).
+
+        DB writes are skipped during backtests and hyperopt so simulated
+        decisions never pollute the live audit trail.  The circuit-breaker
+        alert is also gated via _alert → _is_live, so nothing leaks.
+        """
+        if self._is_live:
+            record = DecisionAudit(
+                at=now.astimezone(UTC),
+                symbol=symbol,
+                kind=kind,
+                reference_price=reference_price,
+                equity_quote=equity,
+                approved=verdict.approved,
+                reason=verdict.reason,
+                quote_amount=(verdict.intent.quote_amount if verdict.intent is not None else None),
+                code_version=getattr(self, "_code_version", "unknown"),
+            )
+            run_safe("audit_decision", lambda: self._sink().record_decision(record), None)
+        # Alert on circuit breaker trips (G). _alert is already gated on _is_live.
         if not verdict.approved and verdict.reason.startswith("circuit breaker"):
             self._alert(
                 f"OLIBUGUARD: CIRCUIT BREAKER TRIPPED\n"
@@ -282,7 +288,13 @@ class OlibuguardStrategy(IStrategy):
         process_throttle_secs=5 would produce ~17k rows/day if we wrote every tick.
         The design intent (§5.7) is "periodic snapshot every N minutes".  The drift
         check is cheap and still runs on every call so we never miss a spike.
+
+        All DB writes are skipped in backtest/hyperopt so simulated equity never
+        pollutes the live audit trail.
         """
+        if not self._is_live:
+            return  # nothing to record outside of live/dry-run
+
         equity = self._read_equity()
         sink = self._sink()
         last = None
