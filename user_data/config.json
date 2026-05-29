@@ -4,7 +4,7 @@
   "stake_amount": 100,
   "tradable_balance_ratio": 0.99,
   "fiat_display_currency": "USD",
-  "dry_run": false,
+  "dry_run": true,
   "dry_run_wallet": 500,
   "timeframe": "15m",
   "trading_mode": "futures",
