@@ -140,13 +140,20 @@ class OlibuguardStrategy(IStrategy):
         self._code_version = code_version()
 
         # Audit sink: try the SQLite backend, fall back to no-op (fail-safe).
+        # The DB path defaults to <user_data_dir>/olibuguard_audit.sqlite but can be
+        # overridden via OLIBUGUARD_AUDIT_DB — used by the historical-replay validation
+        # so it writes to a separate file instead of polluting (or locking) the live
+        # paper-trading audit DB.
         audit: AuditSink = NullAuditSink()
         try:
             from olibuguard.audit.sqlite import SQLiteAuditSink
 
             user_data_dir = Path(self.config.get("user_data_dir", "."))
-            audit = SQLiteAuditSink(user_data_dir / "olibuguard_audit.sqlite")
-            logger.info("audit_sink_started: path=%s", user_data_dir / "olibuguard_audit.sqlite")
+            audit_path = os.environ.get("OLIBUGUARD_AUDIT_DB") or str(
+                user_data_dir / "olibuguard_audit.sqlite"
+            )
+            audit = SQLiteAuditSink(Path(audit_path))
+            logger.info("audit_sink_started: path=%s", audit_path)
         except Exception as exc:
             logger.warning("audit_sink_unavailable: %s — using NullAuditSink", exc)
         self._audit: AuditSink = audit
@@ -267,6 +274,33 @@ class OlibuguardStrategy(IStrategy):
             RunMode.DRY_RUN,
         )
 
+    @property
+    def _advisor_in_backtest(self) -> bool:
+        """One-time validation switch (env OLIBUGUARD_ADVISOR_IN_BACKTEST=1).
+
+        Lets the Bedrock advisor run AND its risk-gate decisions be recorded during
+        backtest, so the full AI decision pipeline (signal → context → advisor veto →
+        verdict) can be validated over historical signals without waiting for live
+        trades.  Crucially, this lets us later JOIN each AI veto against the actual
+        historical outcome of that trade.
+
+        Deliberately does NOT enable circuit breakers (peak stays 0 in backtest via
+        _portfolio_state) or Telegram alerts (gated on _is_live) — only the advisor
+        call and the decision-audit write.  Off by default so hyperopt, which runs
+        thousands of backtests, never incurs AWS cost.
+        """
+        return os.environ.get("OLIBUGUARD_ADVISOR_IN_BACKTEST", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+
+    @property
+    def _record_decisions(self) -> bool:
+        """Whether risk-gate / advisor decisions should be persisted to the audit DB."""
+        return self._is_live or self._advisor_in_backtest
+
     def _alert(self, message: str) -> None:
         """Send an alert notification; never raises (fail-safe).
 
@@ -296,11 +330,13 @@ class OlibuguardStrategy(IStrategy):
     ) -> None:
         """Persist a risk-gate decision; never raises (fail-safe).
 
-        DB writes are skipped during backtests and hyperopt so simulated
-        decisions never pollute the live audit trail.  The circuit-breaker
-        alert is also gated via _alert → _is_live, so nothing leaks.
+        DB writes are skipped during backtests and hyperopt so simulated decisions
+        never pollute the live audit trail — UNLESS the one-time advisor-validation
+        switch (_advisor_in_backtest) is on, in which case historical decisions are
+        recorded so the AI pipeline can be audited.  The circuit-breaker alert is
+        gated via _alert → _is_live, so nothing leaks to Telegram regardless.
         """
-        if self._is_live:
+        if self._record_decisions:
             record = DecisionAudit(
                 at=now.astimezone(UTC),
                 symbol=symbol,
@@ -817,15 +853,26 @@ class OlibuguardStrategy(IStrategy):
         # ── AI advisor veto (Phase 3) ─────────────────────────────────────────
         # The advisor can only reduce or block — never initiate or enlarge a trade.
         # Any error (network, boto3, JSON parse) returns None → trade proceeds.
-        # Skipped entirely in backtest/hyperopt — calling Bedrock per trade would
+        # Normally skipped in backtest/hyperopt — calling Bedrock per trade would
         # cost AWS credits, add latency, and pollute the audit trail with simulated
-        # decisions. The _is_live gate mirrors the same guard on DB/alert writes.
+        # decisions.  The one-time validation switch (_advisor_in_backtest) opens this
+        # path during backtest so the AI can be evaluated over historical signals.
         state = self._portfolio_state(current_time)
         opinion = None
-        if self._is_live:
+        if self._is_live or self._advisor_in_backtest:
             ctx = self._build_market_context(pair, reference, current_time, analyzed, state)
             opinion = run_safe("advisor_opinion", lambda: self._ai().opinion(ctx), None)
         if opinion is not None:
+            # Log every opinion (veto or not) so the AI's reasoning is fully auditable
+            # — essential for the historical-replay validation, where we cross-check
+            # each opinion against the actual trade outcome.
+            logger.info(
+                "ai_advisor_opinion: pair=%s side=%s bias=%.3f rationale=%s",
+                pair,
+                side,
+                opinion.bias,
+                opinion.rationale,
+            )
             factor = clamp_advisor_factor(opinion.bias)
             if factor == 0.0:
                 _ai_verdict = RiskVerdict(

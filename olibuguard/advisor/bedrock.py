@@ -232,5 +232,9 @@ class BedrockAdvisor:
         if veto:
             _logger.info("bedrock_advisor.veto: %s — %s", context.symbol, reason)
             return AdvisorOpinion(bias=-1.0, rationale=reason)
-        _logger.debug("bedrock_advisor.pass: %s — %s", context.symbol, reason)
+        # Pass logged at INFO (not debug): when the advisor evaluated a trade and chose
+        # NOT to veto, its reasoning is operationally valuable — it confirms the AI ran
+        # and lets us audit its judgement against the trade outcome.  ~1 line per trade,
+        # so not noisy even in live (~1 trade/week).
+        _logger.info("bedrock_advisor.pass: %s — %s", context.symbol, reason)
         return None  # abstain — don't interfere with the trade
