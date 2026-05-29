@@ -1,5 +1,5 @@
 {
-  "_comment": "Binance FUTURES TESTNET config — validates real order execution against testnet.binancefuture.com. Requires the freqtrade patch (scripts/patch_freqtrade_binance_testnet.py applied) AND env OLIBUGUARD_BINANCE_TESTNET=1 at runtime, plus TESTNET API keys (generated at testnet.binancefuture.com). Testnet keys cannot touch production. dry_run is false so orders are really sent, but only to the testnet. Separate from config.json to avoid any cross-contamination.",
+  "_comment": "Binance FUTURES DEMO TRADING config — validates real order execution against demo-fapi.binance.com. ccxt deprecated the old set_sandbox_mode futures testnet; the supported path is enable_demo_trading, which the freqtrade patch (scripts/patch_freqtrade_binance_testnet.py) injects when env OLIBUGUARD_BINANCE_TESTNET=1. Uses the SAME keys generated at testnet.binancefuture.com (they authenticate against the demo endpoint). Demo keys cannot touch production. dry_run is false so orders really send, but only to the demo. Separate from config.json to avoid cross-contamination. VALIDATED 2026-05-29: market order filled, position opened, stoploss placed on-exchange.",
   "max_open_trades": 3,
   "stake_currency": "USDT",
   "stake_amount": 100,

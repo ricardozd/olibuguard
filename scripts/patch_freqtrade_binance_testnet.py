@@ -51,17 +51,21 @@ PATCH_BODY = (
     "            api.enable_demo_trading(True)\n"
     "\n"
     f"        {BEGIN}\n"
-    "        # Route Binance to the futures testnet when OLIBUGUARD_BINANCE_TESTNET is set.\n"
+    "        # Route Binance to FUTURES DEMO TRADING (demo-fapi.binance.com) when\n"
+    "        # OLIBUGUARD_BINANCE_TESTNET is set.  ccxt deprecated the old futures\n"
+    "        # sandbox (set_sandbox_mode raises NotSupported on private calls); the\n"
+    "        # supported replacement is enable_demo_trading.  Same testnet.binancefuture.com\n"
+    "        # API keys work against the demo endpoint.\n"
     "        # See scripts/patch_freqtrade_binance_testnet.py for rationale + safety.\n"
     "        import os as _olibuguard_os\n"
     "\n"
     '        if name.lower() == "binance" and _olibuguard_os.environ.get(\n'
     '            "OLIBUGUARD_BINANCE_TESTNET", ""\n'
     '        ).strip().lower() in ("1", "true", "yes", "on"):\n'
-    "            api.set_sandbox_mode(True)\n"
+    "            api.enable_demo_trading(True)\n"
     "            logger.warning(\n"
     '                "OLIBUGUARD_BINANCE_TESTNET active: Binance %s API routed to "\n'
-    '                "testnet.binancefuture.com (set_sandbox_mode)",\n'
+    '                "demo-fapi.binance.com (enable_demo_trading)",\n'
     '                "sync" if sync else "async",\n'
     "            )\n"
     f"        {END}\n"
