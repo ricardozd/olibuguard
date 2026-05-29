@@ -65,6 +65,14 @@ class OlibuguardStrategy(IStrategy):
     can_short = True           # futures: Golden Cross = long, Death Cross = short
     stoploss = -0.10          # hard floor: Freqtrade enforces this even if ATR says wider
     use_custom_stoploss = True
+
+    # Leverage multiplier (futures).  Default 1x = spot-equivalent, no liquidation risk
+    # beyond the stoploss.  Overridable via OLIBUGUARD_LEVERAGE for risk experiments.
+    # At 2-3x the ATR/-10% stops still trigger far before liquidation (~-33%/L price);
+    # leverage only SCALES P&L — it does not change signals, ROI or stop %s (all
+    # price-based), so no re-hyperopt is needed.  Keep ≤3x: higher tightens the gap to
+    # liquidation and is reckless on an edge not yet proven live.
+    LEVERAGE = float(os.environ.get("OLIBUGUARD_LEVERAGE", "1.0"))
     minimal_roi = {"0": 0.07}   # 7% — sweet spot found via ROI sweep (5%→-1.08, 7%→-0.50, 10%→-1.04)
     process_only_new_candles = True
     # 200 candles per timeframe: covers EMA50 on 15m and EMA200 on 1h.
@@ -707,8 +715,13 @@ class OlibuguardStrategy(IStrategy):
         side: str,
         **kwargs: Any,
     ) -> float:
-        """Always 1x — spot-equivalent exposure, no margin call risk above normal stoploss."""
-        return 1.0
+        """Return the configured LEVERAGE (default 1x), clamped to the exchange max.
+
+        1x is spot-equivalent (no liquidation risk beyond the stoploss).  Higher values
+        amplify P&L and bring liquidation closer; the class docstring explains the safe
+        ceiling.  Clamped to max_leverage so the exchange never rejects the order.
+        """
+        return max(1.0, min(self.LEVERAGE, max_leverage))
 
     def custom_stoploss(
         self,
@@ -893,10 +906,17 @@ class OlibuguardStrategy(IStrategy):
                     f"OLIBUGUARD: AI ADVISOR VETO\npair: {pair}\nreason: {opinion.rationale}"
                 )
                 return False
+        # quote_amount is the MARGIN (collateral) at risk, i.e. notional / leverage —
+        # consistent with custom_stake_amount, which sizes the margin.  Without dividing
+        # by leverage the gate would see the leveraged notional (amount*rate) and compare
+        # it against margin-denominated caps (max_position_quote), wrongly flagging every
+        # trade as oversized once leverage > 1x.
+        notional = Decimal(str(amount)) * Decimal(str(rate))
+        margin = notional / Decimal(str(self.LEVERAGE)) if self.LEVERAGE > 0 else notional
         intent = OrderIntent(
             symbol=pair,
             side=Side.SELL if side == "short" else Side.BUY,
-            quote_amount=Decimal(str(amount)) * Decimal(str(rate)),
+            quote_amount=margin,
             reference_price=reference,
             execution_price=Decimal(str(rate)),
         )

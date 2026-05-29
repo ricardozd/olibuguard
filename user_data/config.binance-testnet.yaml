@@ -1,0 +1,45 @@
+# RiskGate config for the Binance DEMO leverage experiment (OLIBUGUARD_CONFIG).
+# Kept separate from config.yaml (used by the Binance dry-run container) so the
+# experiment's wider whitelist and looser circuit breakers don't touch production.
+# Risk appetite raised deliberately (user opted in, family aware) — but the safety
+# NETS stay ON (breakers + kill switch), just with higher thresholds.
+
+exchange:
+  name: binance
+  testnet: false        # routing to demo is handled by the patch + OLIBUGUARD_BINANCE_TESTNET
+  quote_currency: USDT
+
+timeframe: "15m"
+
+risk:
+  # Sizing: margin per trade (the gate reasons on margin = notional / leverage).
+  max_risk_per_trade_pct: 0.20      # 20% of equity ceiling
+  max_position_quote: "110"         # max margin per trade ($100 stake + headroom)
+  max_total_exposure_quote: "350"   # 3 concurrent margins + buffer
+  max_open_positions: 3
+  min_order_quote: "10"
+  max_orders_per_minute: 6
+  max_slippage_pct: 0.005
+  # Circuit breakers — loosened for the experiment (was 0.03 / 0.07) but still active.
+  daily_loss_limit_pct: 0.08        # 8% of equity/day
+  max_drawdown_pct: 0.15            # 15% from peak
+  whitelist:
+    - BTC/USDT:USDT
+    - ETH/USDT:USDT
+    - SOL/USDT:USDT
+    - BNB/USDT:USDT
+    - XRP/USDT:USDT
+    - DOGE/USDT:USDT
+    - ADA/USDT:USDT
+    - AVAX/USDT:USDT
+  blacklist: []
+
+ai:
+  enabled: true
+  provider: "bedrock"
+  model: eu.anthropic.claude-opus-4-7
+  region: eu-west-1
+  thinking: true
+  thinking_budget_tokens: 5000
+  max_tokens: 8192
+  timeout_seconds: 30.0
