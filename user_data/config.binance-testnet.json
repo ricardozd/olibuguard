@@ -1,0 +1,81 @@
+{
+  "_comment": "Binance FUTURES TESTNET config — validates real order execution against testnet.binancefuture.com. Requires the freqtrade patch (scripts/patch_freqtrade_binance_testnet.py applied) AND env OLIBUGUARD_BINANCE_TESTNET=1 at runtime, plus TESTNET API keys (generated at testnet.binancefuture.com). Testnet keys cannot touch production. dry_run is false so orders are really sent, but only to the testnet. Separate from config.json to avoid any cross-contamination.",
+  "max_open_trades": 3,
+  "stake_currency": "USDT",
+  "stake_amount": 100,
+  "tradable_balance_ratio": 0.99,
+  "fiat_display_currency": "USD",
+  "dry_run": false,
+  "dry_run_wallet": 500,
+  "db_url": "sqlite:///user_data/tradesv3.binance-testnet.sqlite",
+  "timeframe": "15m",
+  "trading_mode": "futures",
+  "margin_mode": "isolated",
+  "cancel_open_orders_on_exit": false,
+  "force_entry_enable": true,
+  "unfilledtimeout": {
+    "entry": 10,
+    "exit": 10,
+    "unit": "minutes"
+  },
+  "entry_pricing": {
+    "price_side": "same",
+    "use_order_book": true,
+    "order_book_top": 1,
+    "price_last_balance": 0.0,
+    "check_depth_of_market": {
+      "enabled": false,
+      "bids_to_ask_delta": 1
+    }
+  },
+  "exit_pricing": {
+    "price_side": "same",
+    "use_order_book": true,
+    "order_book_top": 1
+  },
+  "exchange": {
+    "name": "binance",
+    "key": "",
+    "secret": "",
+    "ccxt_config": {},
+    "ccxt_async_config": {},
+    "pair_whitelist": [
+      "BTC/USDT:USDT",
+      "ETH/USDT:USDT"
+    ],
+    "pair_blacklist": []
+  },
+  "pairlists": [
+    {
+      "method": "StaticPairList"
+    }
+  ],
+  "order_types": {
+    "entry": "limit",
+    "exit": "limit",
+    "stoploss": "market",
+    "stoploss_on_exchange": true,
+    "stoploss_on_exchange_interval": 60
+  },
+  "fee": 0.0004,
+  "telegram": {
+    "enabled": false,
+    "token": "",
+    "chat_id": ""
+  },
+  "api_server": {
+    "enabled": true,
+    "listen_ip_address": "127.0.0.1",
+    "listen_port": 8083,
+    "verbosity": "error",
+    "enable_openapi": false,
+    "jwt_secret_key": "changeme-override-with-FREQTRADE__API_SERVER__JWT_SECRET_KEY",
+    "username": "olibuguard",
+    "password": "changeme-override-with-FREQTRADE__API_SERVER__PASSWORD"
+  },
+  "bot_name": "olibuguard-binance-testnet",
+  "dataformat_ohlcv": "feather",
+  "internals": {
+    "process_throttle_secs": 5
+  }
+}
